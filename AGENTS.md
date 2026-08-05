@@ -10,7 +10,10 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 |---|---|
 | 1 — Scaffold do repo | ✅ |
 | 2 — Modelos + migrations | ✅ |
-| 3–20 | ⏳ pendentes |
+| 3 — Conector MT5 | ✅ |
+| 4 — News collector | ✅ |
+| 5 — Twitter collector | ✅ |
+| 6–20 | ⏳ pendentes |
 
 ---
 
@@ -24,6 +27,11 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `settings.is_real_trading`; não reimplementar a checagem.
 - **Docstrings/comentários em português, identificadores em inglês.**
 - **Gerenciador de pacotes: `uv`.** Não usar pip/poetry.
+- **Persistência da coleta é uma só:** `backend/collection/documents.py::store_items` grava
+  qualquer item que satisfaça o Protocol `CollectedItem` (`.dedupe_hash` + `.to_document()`).
+  Coletor novo implementa o Protocol; não reescreve o insert com dedupe.
+- **Coletor é best-effort** (ao contrário do MT5, que falha fechado): fonte indisponível é
+  logada e pulada. Só o pipeline que dimensiona ordem não tolera visão parcial.
 
 ---
 
@@ -58,6 +66,11 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   Todas as URLs de banco/Redis usam `127.0.0.1`.
 - `jq` **não** está instalado e o winget falhou nele. Os scripts do Ralph leem `prd.json` via
   Python (`uv run python -c`), sem jq.
+- `httpx.MockTransport` cobre também `client.stream(...)`: basta devolver
+  `httpx.Response(200, content=b"...")` e o `iter_lines()` funciona. Não é preciso servidor de
+  teste para exercitar o filtered stream do Twitter.
+- Task Celery não expõe `.queue`. Para asserir a fila de destino sem broker, use
+  `app.amqp.router.route({}, "nome.da.task")["queue"].name`.
 
 ---
 

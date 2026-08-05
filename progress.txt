@@ -72,3 +72,30 @@
   não latin1 — latin1 quebra travessão e aspas curvas.
 - Com Postgres de pé a suíte roda inteira: 83 testes, zero skip, coverage 93%.
 ---
+## [2026-08-05] - Historia 5: Twitter collector
+- backend/collection/twitter_collector.py (filtered stream v2), backend/collection/documents.py
+  (store_items compartilhado, extraido do news_collector), task collection.collect_twitter em
+  backend/collection/tasks.py, backend/tests/test_twitter_collector.py, +3 testes em
+  test_celery_app.py.
+- **Aprendizados:**
+  - store_items saiu do news_collector para documents.py e passou a aceitar o Protocol
+    CollectedItem (.dedupe_hash + .to_document()). News e Twitter compartilham tabela e
+    idempotencia; duplicar o insert com savepoint seria duas fontes de verdade para o dedupe.
+    news_collector reexporta store_items via __all__, entao a API publica dele nao mudou.
+  - Dedupe do tweet e sha256("twitter:<id>"). O prefixo separa o espaco de hashes do usado pelas
+    noticias: id de tweet e URL dividem a mesma coluna unica documents.dedupe_hash.
+  - Regras do filtered stream sao globais por conta, nao por conexao. sync_rules apaga o que
+    esta cadastrado antes de adicionar; sem isso um filtro antigo continuaria injetando tweets
+    fora do escopo configurado.
+  - Stream e infinito: a task consome uma janela (DEFAULT_STREAM_LIMIT=200) e fecha. Sem teto a
+    task nunca comitaria. Reexecutar e seguro pelo dedupe no banco.
+  - Linha em branco no NDJSON e keep-alive do servidor, nao erro. Linha que nao parseia e pulada
+    com warning - objeto malformado nao pode encerrar a coleta.
+  - -is:retweet na regra: retweet repete o texto do original e enviesaria o sentimento por
+    contagem.
+  - httpx.MockTransport cobre client.stream(): Response(200, content=bytes) ja alimenta
+    iter_lines(). Nao precisa de servidor de teste.
+  - Task Celery nao tem atributo .queue. A fila real se verifica com
+    app.amqp.router.route({}, nome)["queue"].name - nao abre conexao com o broker.
+  - Token so vive no header do client (build_client). Nenhum log recebe credencial.
+---

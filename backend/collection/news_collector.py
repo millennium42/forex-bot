@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 from calendar import timegm
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import struct_time
@@ -23,13 +23,24 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import feedparser
 import httpx
 import structlog
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from backend.collection.documents import store_items
 from backend.config import Settings, get_settings
 from backend.models import Document, DocumentSource
+
+__all__ = [
+    "NewsFetchError",
+    "NewsItem",
+    "collect_feed",
+    "collect_news",
+    "fetch_feed",
+    "normalize_url",
+    "parse_feed",
+    "store_items",
+    "url_fingerprint",
+]
 
 logger = structlog.get_logger(__name__)
 
@@ -165,41 +176,6 @@ def fetch_feed(url: str, client: httpx.Client | None = None) -> bytes:
     finally:
         if owned:
             client.close()
-
-
-def store_items(session: Session, items: Iterable[NewsItem]) -> int:
-    """Persiste os itens ainda desconhecidos e devolve quantos entraram.
-
-    Não faz commit: quem chama controla a transação (`session_scope` na task).
-    Cada insert vai em savepoint para que uma colisão — outro worker gravou o
-    mesmo hash entre o SELECT e o INSERT — descarte só aquele item, não o lote.
-    """
-    pendentes: dict[str, NewsItem] = {}
-    for item in items:
-        pendentes.setdefault(item.dedupe_hash, item)  # duplicata dentro do próprio feed
-
-    if not pendentes:
-        return 0
-
-    ja_existentes = set(
-        session.scalars(
-            select(Document.dedupe_hash).where(Document.dedupe_hash.in_(pendentes))
-        ).all()
-    )
-
-    inseridos = 0
-    for hash_, item in pendentes.items():
-        if hash_ in ja_existentes:
-            continue
-        try:
-            with session.begin_nested():
-                session.add(item.to_document())
-        except IntegrityError:
-            logger.debug("news.duplicata_concorrente", dedupe_hash=hash_)
-            continue
-        inseridos += 1
-
-    return inseridos
 
 
 def collect_feed(session: Session, feed_url: str, client: httpx.Client | None = None) -> int:

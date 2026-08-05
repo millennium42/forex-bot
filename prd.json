@@ -62,7 +62,7 @@
         "dedupe por tweet id",
         "mesma fila e mesmo schema de documento"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 6,
