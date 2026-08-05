@@ -19,6 +19,8 @@ def test_openapi_schema() -> None:
     assert "/promotion/status" in schema["paths"]
     assert "/signals/" in schema["paths"]
     assert "/trades/" in schema["paths"]
+    assert "/trades/history" in schema["paths"]
+    assert "/audit/" in schema["paths"]
     assert "/health" in schema["paths"]
 
 

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from backend.api.dependencies import get_db
 from backend.api.rate_limiter import RateLimiter
-from backend.api.routers import promotion, signals, system, trades, ws
+from backend.api.routers import audit, promotion, signals, system, trades, ws
 from backend.config import get_settings
 
 settings = get_settings()
@@ -42,6 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(audit.router)
 app.include_router(promotion.router)
 app.include_router(ws.router)
 app.include_router(signals.router)
