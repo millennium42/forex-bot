@@ -67,10 +67,39 @@ const promotionGates = [
 
 export default function Dashboard() {
   const [mounted, setMounted] = useState(false);
+  const [account, setAccount] = useState({ balance: 20.00, equity: 20.00, currency: "USD", connected: true });
+  const [realTrades, setRealTrades] = useState(activeTrades);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
+
+    const fetchLiveData = async () => {
+      try {
+        const accRes = await fetch("/api/system/account");
+        if (accRes.ok) {
+          const accData = await accRes.json();
+          if (accData.connected) {
+            setAccount(accData);
+          }
+        }
+        
+        const tradesRes = await fetch("/api/trades/");
+        if (tradesRes.ok) {
+          const tradesData = await tradesRes.json();
+          // Substitui o mock se houver trades reais da API
+          if (Array.isArray(tradesData)) {
+            setRealTrades(tradesData.length > 0 ? tradesData : []);
+          }
+        }
+      } catch (e) {
+        console.error("Erro ao buscar dados ao vivo", e);
+      }
+    };
+
+    fetchLiveData();
+    const interval = setInterval(fetchLiveData, 3000);
+    return () => clearInterval(interval);
   }, []);
 
   if (!mounted) return null;
@@ -94,9 +123,9 @@ export default function Dashboard() {
 
       {/* Overview Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8 animate-slide-up" style={{ animationDelay: "0.2s" }}>
-        <MetricCard title="Capital Total" tooltip="Saldo atual (equity) incluindo lucros/prejuízos de trades abertos." value="R$ 208,20" change="+4.1%" isPositive={true} icon={<DollarSign className="w-5 h-5 text-blue-400" />} />
-        <MetricCard title="Lucro/Prejuízo Hoje" tooltip="Resultado financeiro das operações fechadas no dia de hoje." value="R$ 8,20" change="+4.1%" isPositive={true} icon={<Activity className="w-5 h-5 text-emerald-400" />} />
-        <MetricCard title="Posições Abertas" tooltip="Trades atualmente rodando no mercado." value="3" subtitle="Exposição Total: 1.5%" icon={<BarChart2 className="w-5 h-5 text-purple-400" />} />
+        <MetricCard title="Capital Total" tooltip="Saldo atual (equity) incluindo lucros/prejuízos de trades abertos." value={`${account.currency} ${account.equity.toFixed(2)}`} change="+0.0%" isPositive={true} icon={<DollarSign className="w-5 h-5 text-blue-400" />} />
+        <MetricCard title="Lucro/Prejuízo Hoje" tooltip="Resultado financeiro das operações fechadas no dia de hoje." value={`${account.currency} ${(account.equity - account.balance).toFixed(2)}`} change="" isPositive={(account.equity - account.balance) >= 0} icon={<Activity className="w-5 h-5 text-emerald-400" />} />
+        <MetricCard title="Posições Abertas" tooltip="Trades atualmente rodando no mercado." value={realTrades.length.toString()} subtitle="Exposição Total: Automático" icon={<BarChart2 className="w-5 h-5 text-purple-400" />} />
         <MetricCard title="Status da Promoção" tooltip="Critérios avaliados para liberar a chave de conta real." value="5 / 5" subtitle="Pronto para avaliação" icon={<ShieldCheck className="w-5 h-5 text-amber-400" />} />
       </div>
 
@@ -189,7 +218,7 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody>
-                {activeTrades.map((trade, idx) => (
+                {realTrades.map((trade, idx) => (
                   <tr key={idx} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                     <td className="px-4 py-3 font-medium text-slate-200">{trade.pair}</td>
                     <td className="px-4 py-3">
@@ -201,7 +230,7 @@ export default function Dashboard() {
                     <td className="px-4 py-3 text-slate-300">{trade.current.toFixed(4)}</td>
                     <td className={`px-4 py-3 text-right font-semibold flex justify-end items-center gap-1 ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {trade.pnl >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                      R$ {Math.abs(trade.pnl).toFixed(2)}
+                      {account.currency} {Math.abs(trade.pnl).toFixed(2)}
                     </td>
                   </tr>
                 ))}
