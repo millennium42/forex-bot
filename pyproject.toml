@@ -86,3 +86,8 @@ plugins = ["pydantic.mypy"]
 [[tool.mypy.overrides]]
 module = ["MetaTrader5.*", "ta.*", "feedparser.*", "textblob.*", "transformers.*", "celery.*"]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pandas-stubs>=3.0.5.260730",
+]

@@ -14,7 +14,8 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 4 — News collector | ✅ |
 | 5 — Twitter collector | ✅ |
 | 6 — Sentiment analyzer | ✅ |
-| 7–20 | ⏳ pendentes |
+| 7 — Technical analyzer | ✅ |
+| 8–20 | ⏳ pendentes |
 
 ---
 
@@ -41,8 +42,16 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `__post_init__`, então nem o modelo nem uma entrada de cache adulterada produzem valor fora de
   [-1,1] / [0,1]. Vale para os scores das próximas histórias (técnico, fusion).
 - **Ausência de informação é `confidence=0`, nunca um score inventado.** Texto vazio, rótulo
-  desconhecido, cache morto: todos devolvem score 0 com confiança 0. Quem consome pondera pela
-  confiança, então o sinal simplesmente não pesa.
+  desconhecido, cache morto, indicador em aquecimento: todos devolvem score 0 com confiança 0.
+  Quem consome pondera pela confiança, então o sinal simplesmente não pesa.
+- **Score e confiança são coisas diferentes.** O score diz a direção; a confiança diz se ela foi
+  sustentada. No técnico, `confiança = concordância entre componentes × intensidade média` — dois
+  indicadores brigando derrubam a confiança mesmo com score alto. O fusion (história 8) pondera
+  por ela.
+- **Indicador em unidade de preço é normalizado por ATR** antes de virar componente. Sem isso, um
+  par volátil dominaria o score só por oscilar mais.
+- **Pesos de combinação vivem só no `signal_fusion` (história 8).** O `technical_analyzer` usa
+  pesos fixos e iguais de propósito — dois lugares versionando peso seriam duas fontes de verdade.
 
 ---
 
@@ -92,6 +101,11 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 - Teste `integration` que grava em Redis precisa de **chave única por execução** (`uuid4()` no
   texto). Com chave fixa e TTL longo, a segunda rodada da suíte lê a entrada da rodada anterior e
   a asserção de "modelo chamado uma vez" passa por acidente — ou falha, dependendo da ordem.
+- `pandas` não traz tipos: sem `pandas-stubs` (já no extra `dev`) o mypy strict quebra com
+  `import-untyped`. Com os stubs instalados, `pd.isna(float)` é tipado como sempre falso e o
+  `warn_unreachable` acusa o corpo do `if` — use `math.isnan` para checar NaN de escalar.
+- Série OHLC constante deixa o **RSI indefinido** (nem ganho, nem perda → NaN). Fixture de teste
+  "plana" não exercita o caminho feliz dos indicadores; exercita o caminho de NaN.
 
 ---
 
