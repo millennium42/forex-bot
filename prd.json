@@ -330,7 +330,7 @@
         "equity <= 0 bloqueia de fato qualquer ordem",
         "teste do caminho degenerado e do limite exato (na fronteira, aceita; acima, rejeita)"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 29,
@@ -344,7 +344,7 @@
         "bloqueio por drawdown grava audit_log e exige reset manual, como o kill switch",
         "teste: lucro de 10% seguido de queda de 10% conta como drawdown do pico, nao do inicio"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 30,
@@ -359,7 +359,7 @@
         "teste: equity maior gera volume maior, proporcionalmente",
         "teste: ATR maior (stop mais distante) gera volume menor para o mesmo risco"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 31,
@@ -370,7 +370,7 @@
         "migration aditiva para volume_step",
         "teste: instrumento existente com contract_size desatualizado e corrigido no ciclo"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }

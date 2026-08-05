@@ -25,6 +25,10 @@ from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.config import Settings
 from backend.execution import runner as runner_module
+from backend.execution.drawdown_guard import (
+    is_drawdown_block_active,
+    reset_drawdown_block,
+)
 from backend.execution.kill_switch import trigger_kill_switch
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import RiskManager
@@ -63,6 +67,7 @@ class FakeTerminal:
         equity: float = 100_000.0,
         candle_rows: list[dict[str, float]] | None = None,
         volume_min: float = 0.01,
+        contract_size: float = 100_000.0,
     ) -> None:
         self.positions = positions
         self._tick = tick or SimpleNamespace(time=1_700_000_000, bid=1.0850, ask=1.0852)
@@ -70,6 +75,7 @@ class FakeTerminal:
         self.equity = equity
         self.candle_rows = candle_rows
         self.volume_min = volume_min
+        self.contract_size = contract_size
         self.last_order: dict[str, Any] | None = None
 
     def initialize(self, *_args: Any, **_kwargs: Any) -> bool:
@@ -101,7 +107,7 @@ class FakeTerminal:
         return self._tick
 
     def symbol_info(self, _symbol: str) -> Any:
-        return SimpleNamespace(volume_min=self.volume_min)
+        return SimpleNamespace(volume_min=self.volume_min, trade_contract_size=self.contract_size)
 
     def symbol_select(self, _symbol: str, _enable: bool) -> bool:
         return True
@@ -159,8 +165,8 @@ def _client(terminal: FakeTerminal | None = None) -> MT5Client:
     return client
 
 
-def _runner(symbols: list[str] | None = None) -> BotRunner:
-    return BotRunner(symbols or ["EURUSD"], settings=_settings())
+def _runner(symbols: list[str] | None = None, **settings_overrides: object) -> BotRunner:
+    return BotRunner(symbols or ["EURUSD"], settings=_settings(**settings_overrides))
 
 
 # -- kill switch impede o ciclo inteiro (AC1) -------------------------------
@@ -178,6 +184,93 @@ def test_run_cycle_kill_switch_ativo_impede_o_ciclo_inteiro(
     runner.run_cycle(_client(), session)
 
     assert processed == []
+
+
+# -- _drawdown_pct: unitário -------------------------------------------------
+
+
+def test_drawdown_pct_pico_nao_positivo_nao_quebra() -> None:
+    assert BotRunner._drawdown_pct(0.0, -10.0) == 0.0
+    assert BotRunner._drawdown_pct(-5.0, -10.0) == 0.0
+
+
+def test_drawdown_pct_novo_pico_nao_e_negativo() -> None:
+    assert BotRunner._drawdown_pct(100.0, 110.0) == 0.0
+
+
+# -- história 29: drawdown acumulado do pico bloqueia o ciclo ----------------
+
+
+def test_run_cycle_drawdown_conta_a_partir_do_pico_nao_do_inicio(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lucro de 10% seguido de queda de 10% é drawdown do PICO, não do início.
+
+    Partindo de 100k: sobe para 110k (novo pico) e cai para 99k. Do início
+    (100k) isso seria só 1% de queda — não bateria um limiar de 10%. Do pico
+    (110k) é exatamente 10%, e deve bloquear.
+    """
+    processed: list[str] = []
+    runner = _runner(["EURUSD"], max_drawdown_from_peak_pct=10.0)
+    monkeypatch.setattr(runner, "_process_symbol", lambda *a, **kw: processed.append(a[0]))
+    terminal = FakeTerminal(equity=100_000.0)
+    client = _client(terminal)
+
+    runner.run_cycle(client, session)
+    assert not is_drawdown_block_active(session)
+
+    terminal.equity = 110_000.0
+    runner.run_cycle(client, session)
+    assert not is_drawdown_block_active(session)
+
+    terminal.equity = 99_000.0
+    runner.run_cycle(client, session)
+
+    assert is_drawdown_block_active(session)
+    assert processed == ["EURUSD", "EURUSD"]  # o 3º ciclo não chegou a processar símbolo
+
+
+def test_run_cycle_drawdown_bloqueado_impede_ciclos_seguintes_ate_reset(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processed: list[str] = []
+    runner = _runner(["EURUSD"], max_drawdown_from_peak_pct=10.0)
+    monkeypatch.setattr(runner, "_process_symbol", lambda *a, **kw: processed.append(a[0]))
+    terminal = FakeTerminal(equity=100_000.0)
+    client = _client(terminal)
+
+    runner.run_cycle(client, session)
+    terminal.equity = 89_000.0
+    runner.run_cycle(client, session)
+    assert is_drawdown_block_active(session)
+
+    terminal.equity = 100_000.0  # equity já recuperou...
+    runner.run_cycle(client, session)
+    # ...mas o ciclo continua bloqueado sem reset manual: só o 1º ciclo (antes
+    # do drawdown) processou símbolo; o 2º foi bloqueado pelo drawdown e o 3º
+    # continua bloqueado mesmo com o equity recuperado.
+    assert processed == ["EURUSD"]
+
+    reset_drawdown_block(session, actor="admin")
+    runner.run_cycle(client, session)
+    assert processed == ["EURUSD", "EURUSD"]
+
+
+def test_run_cycle_sem_atingir_limiar_de_drawdown_nao_bloqueia(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processed: list[str] = []
+    runner = _runner(["EURUSD"], max_drawdown_from_peak_pct=10.0)
+    monkeypatch.setattr(runner, "_process_symbol", lambda *a, **kw: processed.append(a[0]))
+    terminal = FakeTerminal(equity=100_000.0)
+    client = _client(terminal)
+
+    runner.run_cycle(client, session)
+    terminal.equity = 95_000.0  # 5% abaixo do pico: não bate os 10%
+    runner.run_cycle(client, session)
+
+    assert not is_drawdown_block_active(session)
+    assert processed == ["EURUSD", "EURUSD"]
 
 
 # -- ATR inválido não gera ordem (AC2) ---------------------------------------
@@ -231,19 +324,89 @@ def test_executar_stop_loss_nao_e_constante_entre_atrs_diferentes(session: Sessi
     assert trades[0].stop_loss != trades[1].stop_loss
 
 
-# -- lote mínimo vem do broker por símbolo (história 23) ---------------------
+# -- volume derivado do risco (história 30) -----------------------------------
 
 
-def test_executar_usa_volume_minimo_do_broker(session: Session) -> None:
+def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
     runner = _runner()
-    client = _client(FakeTerminal(volume_min=0.05))
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0010
+    runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    distancia_sl = atr * runner.settings.atr_sl_multiplier
+    esperado = (100_000.0 * runner.settings.max_risk_per_trade_pct / 100.0) / (
+        distancia_sl * instrumento.contract_size
+    )
+    assert trade.volume == pytest.approx(esperado)
+
+
+def _instrumento_padrao(**overrides: object) -> Instrument:
+    base: dict[str, object] = {
+        "symbol": "EURUSD",
+        "contract_size": 100_000.0,
+        "min_volume": 0.01,
+        "volume_step": 0.01,
+        "volume_max": 100.0,
+    }
+    base.update(overrides)
+    return Instrument(**base)
+
+
+def test_executar_equity_maior_gera_volume_maior_proporcionalmente() -> None:
+    distancia_sl = 0.0010 * 2.0
+
+    volume_equity_baixo = BotRunner._calcular_volume(
+        50_000.0, distancia_sl, _instrumento_padrao(), 0.5
+    )
+    volume_equity_alto = BotRunner._calcular_volume(
+        100_000.0, distancia_sl, _instrumento_padrao(), 0.5
+    )
+
+    assert volume_equity_baixo is not None
+    assert volume_equity_alto == pytest.approx(volume_equity_baixo * 2, rel=1e-6)
+
+
+def test_executar_atr_maior_gera_volume_menor_para_mesmo_risco() -> None:
+    volume_stop_curto = BotRunner._calcular_volume(100_000.0, 0.002, _instrumento_padrao(), 0.5)
+    volume_stop_longo = BotRunner._calcular_volume(100_000.0, 0.006, _instrumento_padrao(), 0.5)
+
+    assert volume_stop_curto is not None
+    assert volume_stop_longo is not None
+    assert volume_stop_longo < volume_stop_curto
+
+
+def test_calcular_volume_arredonda_para_baixo_no_step_do_broker() -> None:
+    instrumento = _instrumento_padrao(volume_step=0.1)
+
+    # risco alvo = 100_000 * 0.5% = 500; distância_sl*contract = 0.0021*100_000 = 210
+    # volume bruto = 500/210 = 2.3809... — deve arredondar para 2.3, nunca 2.4.
+    volume = BotRunner._calcular_volume(100_000.0, 0.0021, instrumento, 0.5)
+
+    assert volume == pytest.approx(2.3)
+
+
+def test_calcular_volume_respeita_volume_max_do_broker() -> None:
+    instrumento = _instrumento_padrao(volume_max=1.0)
+
+    volume = BotRunner._calcular_volume(1_000_000.0, 0.001, instrumento, 0.5)
+
+    assert volume == pytest.approx(1.0)
+
+
+def test_executar_ordem_rejeitada_quando_risco_nao_cobre_lote_minimo(session: Session) -> None:
+    """Risco não paga o lote mínimo: a ordem é rejeitada, nunca arredondada para cima."""
+    runner = _runner()
+    client = _client(FakeTerminal(volume_min=5.0))
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
     runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento)
 
-    trade = session.execute(select(Trade)).scalars().one()
-    assert trade.volume == pytest.approx(0.05)
+    assert session.execute(select(Trade)).scalars().all() == []
 
 
 # -- idempotência com granularidade de minuto (AC4) --------------------------
@@ -312,7 +475,53 @@ def test_perda_do_dia_soma_apenas_outcomes_negativos_de_hoje(session: Session) -
     _outcome_de(session, pnl=30.0, created_at=agora)  # positivo: não conta
     _outcome_de(session, pnl=-20.0, created_at=ontem)  # de ontem: não conta
 
-    assert BotRunner._perda_do_dia(session) == pytest.approx(50.0)
+    assert BotRunner._perda_do_dia(session, _client()) == pytest.approx(50.0)
+
+
+# -- história 29: perda do dia inclui o P&L flutuante das posições abertas ---
+
+
+def test_perda_do_dia_inclui_pnl_flutuante_das_posicoes_abertas(session: Session) -> None:
+    agora = datetime.now(UTC)
+    _outcome_de(session, pnl=-50.0, created_at=agora)  # realizado
+
+    posicoes = (
+        SimpleNamespace(
+            ticket=1,
+            identifier=1,
+            symbol="EURUSD",
+            volume=0.1,
+            type=0,
+            sl=0.0,
+            tp=0.0,
+            price_open=1.1,
+            profit=-300.0,
+        ),
+        SimpleNamespace(
+            ticket=2,
+            identifier=2,
+            symbol="GBPUSD",
+            volume=0.1,
+            type=1,
+            sl=0.0,
+            tp=0.0,
+            price_open=1.3,
+            profit=50.0,  # lucro flutuante não abate a perda
+        ),
+    )
+    client = _client(FakeTerminal(positions=posicoes))
+
+    # Flutuante é o P&L líquido das posições (-300 + 50 = -250): o lucro de
+    # uma posição reduz o risco líquido em aberto, mas o resultado do dia só
+    # piora quando esse líquido é negativo — 50 (realizado) + 250 (flutuante
+    # líquido negativo), nunca os 300 da perna perdedora isolada.
+    assert BotRunner._perda_do_dia(session, client) == pytest.approx(50.0 + 250.0)
+
+
+def test_perda_do_dia_sem_posicoes_abertas_e_so_o_realizado(session: Session) -> None:
+    _outcome_de(session, pnl=-40.0, created_at=datetime.now(UTC))
+
+    assert BotRunner._perda_do_dia(session, _client()) == pytest.approx(40.0)
 
 
 # -- exposição enxerga posição aberta fora do bot (AC6) -----------------------
@@ -342,19 +551,15 @@ def test_exposicao_aberta_inclui_posicoes_abertas_fora_do_bot() -> None:
         ),
     )
     client = _client(FakeTerminal(positions=posicoes_manuais))
-    equity = 100_000.0
 
-    exposicao = _runner()._exposicao_aberta(client, equity)
+    exposicao = _runner()._exposicao_aberta_monetaria(client)
 
     # O contract_size entra na conta: 0.5 lote não é 0,55 de exposição, é 55.000.
+    # O valor devolvido é monetário — não um percentual do equity (história 28:
+    # misturar as duas unidades era o bug que fazia o teto de 3% nunca disparar).
     contrato = 100_000.0
     exposto = abs(0.5 * contrato * 1.1000) + abs(0.2 * contrato * 1.3000)
-    assert exposicao == pytest.approx((exposto / equity) * 100.0)
-
-
-def test_exposicao_aberta_com_equity_nao_positivo_bloqueia_tudo() -> None:
-    client = _client()
-    assert _runner()._exposicao_aberta(client, 0.0) == 100.0
+    assert exposicao == pytest.approx(exposto)
 
 
 # -- falha de MT5 encerra o ciclo em vez de pular o símbolo (AC7) ------------
@@ -432,6 +637,22 @@ def test_get_or_create_instrument_atualiza_volume_minimo_quando_broker_muda(
     instrumento = BotRunner._get_or_create_instrument(session, "EURUSD", client_novo)
 
     assert instrumento.min_volume == pytest.approx(0.5)
+    assert len(session.execute(select(Instrument)).scalars().all()) == 1
+
+
+def test_get_or_create_instrument_atualiza_contract_size_quando_broker_muda(
+    session: Session,
+) -> None:
+    """História 31: contract_size desatualizado (ex: XAUUSD com o default 100_000
+    de EURUSD) é corrigido no mesmo ciclo que sincroniza volume_min, sem esperar
+    o instrumento ser recriado."""
+    client_antigo = _client(FakeTerminal(contract_size=100_000.0))
+    BotRunner._get_or_create_instrument(session, "XAUUSD", client_antigo)
+
+    client_novo = _client(FakeTerminal(contract_size=100.0))
+    instrumento = BotRunner._get_or_create_instrument(session, "XAUUSD", client_novo)
+
+    assert instrumento.contract_size == pytest.approx(100.0)
     assert len(session.execute(select(Instrument)).scalars().all()) == 1
 
 

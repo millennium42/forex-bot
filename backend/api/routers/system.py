@@ -13,6 +13,10 @@ from backend.collection.mt5_client import (
     MT5ConnectionError,
     MT5ModeMismatchError,
 )
+from backend.execution.drawdown_guard import (
+    is_drawdown_block_active,
+    reset_drawdown_block,
+)
 from backend.execution.kill_switch import (
     is_kill_switch_active,
     reset_kill_switch,
@@ -25,6 +29,10 @@ router = APIRouter(prefix="/system", tags=["System"])
 
 
 class KillSwitchStatus(BaseModel):
+    active: bool
+
+
+class DrawdownBlockStatus(BaseModel):
     active: bool
 
 
@@ -95,3 +103,19 @@ def reset_kill_switch_endpoint(
     """Desativa o kill switch (exige um ator)."""
     reset_kill_switch(db, actor=payload.actor)
     return KillSwitchStatus(active=False)
+
+
+@router.get("/drawdown-block", response_model=DrawdownBlockStatus)
+def get_drawdown_block_status(db: Session = Depends(get_db)) -> DrawdownBlockStatus:  # noqa: B008
+    """Retorna o estado atual do bloqueio por drawdown acumulado (história 29)."""
+    return DrawdownBlockStatus(active=is_drawdown_block_active(db))
+
+
+@router.post("/drawdown-block/reset", response_model=DrawdownBlockStatus)
+def reset_drawdown_block_endpoint(
+    payload: ActionPayload,
+    db: Session = Depends(get_db),  # noqa: B008
+) -> DrawdownBlockStatus:
+    """Desativa o bloqueio por drawdown (exige um ator). Só ação manual — como o kill switch."""
+    reset_drawdown_block(db, actor=payload.actor)
+    return DrawdownBlockStatus(active=False)

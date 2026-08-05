@@ -50,3 +50,6 @@ class AuditEventType(StrEnum):
     RECONCILIATION_MISMATCH = "reconciliation_mismatch"
     WEIGHTS_UPDATED = "weights_updated"
     WEIGHTS_ROLLED_BACK = "weights_rolled_back"
+    EQUITY_PEAK_UPDATED = "equity_peak_updated"
+    DRAWDOWN_LIMIT_TRIGGERED = "drawdown_limit_triggered"
+    DRAWDOWN_LIMIT_RESET = "drawdown_limit_reset"

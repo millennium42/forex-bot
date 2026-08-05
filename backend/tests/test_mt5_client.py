@@ -293,6 +293,32 @@ def test_get_symbol_info_com_volume_min_zero_e_rejeitado() -> None:
         client.get_symbol_info("EURUSD")
 
 
+# --- passo e teto de volume (história 30) -----------------------------------
+def test_get_symbol_info_devolve_volume_step_e_volume_max_do_broker() -> None:
+    terminal = FakeTerminal(
+        symbol_info=SimpleNamespace(volume_min=0.01, volume_step=0.1, volume_max=50.0)
+    )
+    client = _client(terminal)
+    client.connect()
+
+    info = client.get_symbol_info("EURUSD")
+
+    assert info.volume_step == pytest.approx(0.1)
+    assert info.volume_max == pytest.approx(50.0)
+
+
+def test_get_symbol_info_usa_default_quando_broker_nao_informa_step_e_max() -> None:
+    """Broker sem esses campos (dublê antigo, versão de API diferente): assume o padrão comum."""
+    terminal = FakeTerminal(symbol_info=SimpleNamespace(volume_min=0.01))
+    client = _client(terminal)
+    client.connect()
+
+    info = client.get_symbol_info("EURUSD")
+
+    assert info.volume_step == pytest.approx(0.01)
+    assert info.volume_max == pytest.approx(100.0)
+
+
 def test_account_info_vazio_levanta_erro() -> None:
     terminal = FakeTerminal(account=None)
     client = _client(terminal)

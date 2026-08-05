@@ -35,6 +35,10 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 25 — Sentimento entra na decisão | ✅ |
 | 26 — Timeframe configurável, default M5 | ✅ |
 | 27 — Filtro de confiança mínima calibrado | ✅ |
+| 28 — P0: exposição em unidade coerente | ✅ |
+| 29 — Perda flutuante conta e drawdown acumulado bloqueia | ✅ |
+| 30 — Volume proporcional ao equity | ✅ |
+| 31 — contract_size sincronizado com o broker | ✅ |
 
 ---
 
@@ -178,6 +182,47 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   (história 23) exigiu atualizar os `FakeTerminal` de `test_mt5_client.py`, `test_runner.py` e
   `test_order_manager.py` — `test_position_tracker.py` ficou de fora porque seu dublê já usa
   `# type: ignore` e não invoca esse caminho.
+- **Estado monotônico persistido sem tabela dedicada: reaproveitar o `audit_log`.** O pico de
+  equity (história 29) não precisa de coluna nem tabela própria — cada novo máximo grava um evento
+  `EQUITY_PEAK_UPDATED` com o valor no `payload`, e como o pico só cresce, o evento mais recente
+  já é o pico (`ORDER BY id DESC LIMIT 1`). O bloqueio por drawdown segue exatamente o padrão do
+  kill switch (história 18): dois tipos de evento (triggered/reset), o mais recente decide o
+  estado, reset só por ação manual. Ver `backend/execution/drawdown_guard.py` como referência para
+  a próxima trava que precisar do mesmo formato.
+- **Nenhum percentual cruza a fronteira do `risk_manager`.** Toda quantidade que entra em
+  `validate_order` (exposição, risco por trade, perdas) é valor monetário na moeda da conta. O
+  `risk_manager` já converte os tetos configurados em `%` (`max_total_exposure_pct` etc.) para
+  monetário internamente via `equity * pct/100` — quem chama nunca deve fazer essa conversão de
+  novo nem passar o percentual bruto. Nome do parâmetro deixa a unidade explícita
+  (`current_exposure_monetary`, `trade_monetary_risk`), nunca só `current_exposure`. Bug real da
+  história 28: comparar percentual (~1-5) com teto monetário (~milhares) fazia o teto nunca disparar.
+- **Adicionar valor a um enum nativo do Postgres exige migration própria (`ALTER TYPE ... ADD
+  VALUE IF NOT EXISTS`), nunca editar a migration que criou o tipo.** O SQLite dos testes de
+  unidade deriva o CHECK do enum Python atual, então um valor novo em `AuditEventType` passa
+  despercebido lá mesmo sem migration — só o Postgres real expõe a ausência. `ADD VALUE` funciona
+  dentro da transação padrão do Alembic (Postgres 12+), desde que o valor novo não seja usado na
+  mesma transação que o adiciona. Ver `7a2f9c1d4e6b_add_drawdown_audit_events.py`.
+- **Volume da ordem é dimensionado pelo risco, não mais um lote fixo (história 30).**
+  `BotRunner._calcular_volume` faz `volume = (equity * risco%) / (distância_sl * contract_size)`,
+  arredondado **para baixo** no `volume_step` do broker (nunca para cima — isso infla o risco
+  real). Se o risco configurado não paga nem o `min_volume` do broker, devolve `None` e a ordem é
+  rejeitada em `_executar` — mesma filosofia de "ausência de cobertura não vira ordem
+  sub-dimensionada". Um `+ 1e-9` antes do `math.floor` absorve erro de ponto flutuante da divisão
+  (`6.9999999999997` precisa virar `7`, não `6`). O teto por **contagem** de trades diários
+  (`MAX_TRADES_PER_DAY`) saiu de cena nesta história — quem protege agora é só o limite de perda
+  (diário + drawdown do pico, histórias 18/29), não mais um número de operações.
+- **`mapped_column(default=...)` só se aplica no INSERT/flush, nunca na construção do objeto
+  Python em memória.** Um teste que cria `Instrument(symbol="X", contract_size=100_000.0)` sem
+  `session.add()`/commit e usa o objeto na hora (ex.: passando pra uma função pura como
+  `_calcular_volume`) recebe `instrument.volume_step is None`, não o default do model — precisa
+  passar todos os campos usados explicitamente no construtor.
+- **Sincronizar metadado de broker é "todos os campos ou nenhum", não campo a campo.** A história
+  23 sincronizava `min_volume`; a 30 acrescentou `volume_step`/`volume_max` mas esqueceu
+  `contract_size`, que ficava preso no default 100_000 (correto para EURUSD, uma ordem de
+  grandeza errado para XAUUSD, que usa 100). A 31 corrigiu incluindo `contract_size` na mesma
+  comparação `mudou = (...)` do `_get_or_create_instrument`. Ao adicionar um novo campo de
+  `SymbolInfo` no futuro, incluí-lo ali é parte do trabalho, não um follow-up — o padrão já existe,
+  só falta lembrar de estendê-lo.
 
 ---
 

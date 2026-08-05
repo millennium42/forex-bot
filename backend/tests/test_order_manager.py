@@ -117,7 +117,7 @@ def test_place_order_success(session: Session, order_manager: OrderManager) -> N
         instrument_id=instrument.id,
         equity=10000.0,
         daily_loss=0.0,
-        current_exposure=0.0,
+        current_exposure_monetary=0.0,
         trade_monetary_risk=50.0,
     )
 

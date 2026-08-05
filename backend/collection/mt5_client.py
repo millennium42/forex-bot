@@ -108,6 +108,10 @@ class SymbolInfo:
     # Unidades da moeda base por lote. Sem isso não dá para converter volume em
     # exposição monetária: 0.01 lote de EURUSD não é 0.01 de exposição, é 1.000.
     contract_size: float = 100_000.0
+    # Passo de volume: todo volume enviado ao broker precisa ser múltiplo dele.
+    volume_step: float = 0.01
+    # Maior volume aceito numa única ordem para o símbolo.
+    volume_max: float = 100.0
 
 
 # `entry` de um deal no MT5: 0 = abertura, 1 = fechamento, 2 = reversão.
@@ -148,6 +152,9 @@ class Position:
     sl: float
     tp: float
     price_open: float
+    # P&L flutuante da posição, direto do broker. Default 0.0 só para dublês de
+    # teste que não simulam esse campo — o MT5 real sempre o preenche.
+    profit: float = 0.0
 
 
 def _load_terminal() -> MT5Terminal:
@@ -324,8 +331,16 @@ class MT5Client:
         volume_min = float(raw.volume_min)
         if volume_min <= 0:
             raise MT5ConnectionError(f"volume_min inválido para {symbol}: {volume_min}")
+        volume_step = float(getattr(raw, "volume_step", 0) or 0.01)
+        volume_max = float(getattr(raw, "volume_max", 0) or 100.0)
 
-        return SymbolInfo(symbol=symbol, volume_min=volume_min, contract_size=contract_size)
+        return SymbolInfo(
+            symbol=symbol,
+            volume_min=volume_min,
+            contract_size=contract_size,
+            volume_step=volume_step,
+            volume_max=volume_max,
+        )
 
     def get_ticks(self, symbols: list[str]) -> dict[str, Tick]:
         """Ticks de vários símbolos. Falha inteira se qualquer um falhar.
@@ -364,6 +379,7 @@ class MT5Client:
                 sl=float(p.sl),
                 tp=float(p.tp),
                 price_open=float(p.price_open),
+                profit=float(getattr(p, "profit", 0.0)),
             )
             for p in raw_positions
         ]

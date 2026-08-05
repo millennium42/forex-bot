@@ -6,13 +6,17 @@ recebe forem reais. Nada aqui é hard-coded — equity vem do broker, exposiçã
 vem das posições abertas, perda do dia vem do banco, e o stop vem da
 volatilidade medida.
 
-Postura de alavancagem: **a mais conservadora possível**. O volume é sempre o
-lote mínimo, e ainda assim a ordem só passa se o risco monetário resultante
-couber no limite de 1% do equity. Não cabendo, não opera.
+Postura de alavancagem: **dimensionada pelo risco, não pelo lote**. O volume da
+ordem é derivado de `MAX_RISK_PER_TRADE_PCT` do equity e da distância do stop
+(história 30) — quanto mais volátil o par, menor o lote para o mesmo risco
+monetário. Quando o risco configurado não paga nem o lote mínimo do broker, a
+ordem é rejeitada em vez de sair sub-dimensionada (lote mínimo) ou
+sobre-arriscada (arredondar para cima).
 """
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -37,14 +41,18 @@ from backend.collection.documents import recent_documents
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.config import Settings, get_settings
 from backend.db import session_scope
+from backend.execution.drawdown_guard import (
+    is_drawdown_block_active,
+    record_equity,
+    trigger_drawdown_block,
+)
 from backend.execution.kill_switch import is_kill_switch_active
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
-from backend.models.enums import Direction, Side, TradeStatus
+from backend.models.enums import Direction, Side
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
-from backend.models.trade import Trade
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -99,6 +107,28 @@ class BotRunner:
         """Um ciclo completo sobre todos os símbolos."""
         if is_kill_switch_active(session):
             logger.warning("runner.kill_switch_ativo", acao="ciclo ignorado")
+            return
+
+        if is_drawdown_block_active(session):
+            logger.warning("runner.drawdown_bloqueado", acao="ciclo ignorado")
+            return
+
+        equity = client.get_account_info().equity
+        peak_equity = record_equity(session, equity)
+        drawdown_pct = self._drawdown_pct(peak_equity, equity)
+        if drawdown_pct >= self.settings.max_drawdown_from_peak_pct:
+            reason = (
+                f"Drawdown de {drawdown_pct:.2f}% a partir do pico de equity "
+                f"{peak_equity} (equity atual {equity})"
+            )
+            trigger_drawdown_block(session, reason=reason)
+            logger.warning(
+                "runner.drawdown_bloqueado",
+                acao="ciclo ignorado",
+                drawdown_pct=round(drawdown_pct, 2),
+                pico=peak_equity,
+                equity=equity,
+            )
             return
 
         risk_manager = RiskManager(self.settings)
@@ -265,16 +295,6 @@ class BotRunner:
             logger.debug("runner.posicao_ja_aberta", symbol=symbol)
             return
 
-        # Teto diário de ordens (§4 do PRD).
-        enviados = self._trades_de_hoje(session)
-        if enviados >= self.settings.max_trades_per_day:
-            logger.info(
-                "runner.teto_diario_atingido",
-                enviados=enviados,
-                limite=self.settings.max_trades_per_day,
-            )
-            return
-
         account = client.get_account_info()
         tick = client.get_tick(symbol)
 
@@ -293,13 +313,24 @@ class BotRunner:
             logger.warning("runner.stop_invalido", symbol=symbol, stop_loss=stop_loss)
             return
 
-        risco_monetario = distancia_sl * instrument.min_volume * instrument.contract_size
+        volume = self._calcular_volume(
+            account.equity, distancia_sl, instrument, self.settings.max_risk_per_trade_pct
+        )
+        if volume is None:
+            logger.info(
+                "runner.risco_nao_cobre_lote_minimo",
+                symbol=symbol,
+                min_volume=instrument.min_volume,
+            )
+            return
+
+        risco_monetario = distancia_sl * volume * instrument.contract_size
 
         order_manager.place_order(
             request=OrderRequest(
                 symbol=symbol,
                 side=side,
-                volume=instrument.min_volume,
+                volume=volume,
                 price=entry,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
@@ -308,43 +339,63 @@ class BotRunner:
             client_request_id=self._client_request_id(symbol, side),
             instrument_id=instrument.id,
             equity=account.equity,
-            daily_loss=self._perda_do_dia(session),
-            current_exposure=self._exposicao_aberta(client, account.equity),
+            daily_loss=self._perda_do_dia(session, client),
+            current_exposure_monetary=self._exposicao_aberta_monetaria(client),
             trade_monetary_risk=risco_monetario,
             signal_id=signal_id,
         )
 
     # -- estado real, nunca presumido ---------------------------------------
     @staticmethod
-    def _perda_do_dia(session: Session) -> float:
-        """Perda realizada hoje, em valor absoluto positivo.
+    def _drawdown_pct(peak_equity: float, equity: float) -> float:
+        """Percentual de queda do equity atual em relação ao pico já observado.
 
-        Lida do banco e não de um contador em memória: o processo reinicia, o
-        prejuízo do dia não.
+        Nunca negativo: um novo pico (equity >= peak) não é "drawdown negativo".
+        """
+        if peak_equity <= 0:
+            return 0.0
+        return max(0.0, (peak_equity - equity) / peak_equity * 100.0)
+
+    @staticmethod
+    def _perda_do_dia(session: Session, client: MT5Client) -> float:
+        """Perda do dia, em valor absoluto positivo: realizada + flutuante.
+
+        A parte realizada é lida do banco e não de um contador em memória: o
+        processo reinicia, o prejuízo do dia não. A parte flutuante é o P&L
+        líquido das posições abertas no broker (soma de todas, lucro e perda
+        juntos) — sem ela, posições perdendo ficam invisíveis para o limite
+        diário até fechar, exatamente quando já não protegem mais nada
+        (história 29). Só o líquido *negativo* piora o resultado do dia: um
+        líquido positivo não abate perda já realizada, mas também não soma —
+        lucro flutuante ainda pode reverter antes de fechar.
         """
         inicio = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        total = session.execute(
+        realizado = session.execute(
             select(func.coalesce(func.sum(Outcome.pnl), 0.0)).where(
                 Outcome.created_at >= inicio, Outcome.pnl < 0
             )
         ).scalar_one()
-        return abs(float(total))
 
-    def _exposicao_aberta(self, client: MT5Client, equity: float) -> float:
-        """Exposição das posições abertas, em percentual do equity.
+        flutuante = sum(p.profit for p in client.get_positions())
+        perda_flutuante = max(0.0, -flutuante)
+
+        return abs(float(realizado)) + perda_flutuante
+
+    def _exposicao_aberta_monetaria(self, client: MT5Client) -> float:
+        """Exposição das posições abertas, em valor monetário (moeda da conta).
 
         Vem do broker, não do banco: posição aberta por fora do bot ainda
-        consome risco da conta e precisa contar no limite de 3%.
+        consome risco da conta e precisa contar no limite de exposição. O
+        retorno é sempre monetário, nunca percentual — o risk manager soma
+        este valor direto a `trade_monetary_risk` (também monetário) e
+        compara com um teto monetário. Devolver percentual aqui foi o bug da
+        história 28: o teto de 3% praticamente nunca disparava porque um
+        número como "1.15" (%) era tratado como US$ 1,15.
 
         O `contract_size` é indispensável aqui. Sem ele, 0.01 lote de EURUSD
         conta como US$ 0,0115 em vez de US$ 1.154 — a exposição sai subestimada
-        em cinco ordens de grandeza e o limite de 3% nunca dispara.
+        em cinco ordens de grandeza e o limite de exposição nunca dispara.
         """
-        if equity <= 0:
-            # Equity não positivo é situação degenerada; devolver 100% faz o
-            # risk manager barrar tudo, que é o comportamento seguro.
-            return 100.0
-
         exposto = 0.0
         for p in client.get_positions():
             try:
@@ -355,7 +406,7 @@ class BotRunner:
                 contract_size = 100_000.0
             exposto += abs(p.volume * contract_size * p.price_open)
 
-        return (exposto / equity) * 100.0
+        return exposto
 
     @staticmethod
     def _tem_posicao_aberta(client: MT5Client, symbol: str) -> bool:
@@ -368,39 +419,66 @@ class BotRunner:
         return any(p.symbol == symbol for p in client.get_positions())
 
     @staticmethod
-    def _trades_de_hoje(session: Session) -> int:
-        """Ordens enviadas hoje, para o teto diário (§4 do PRD).
+    def _calcular_volume(
+        equity: float, distancia_sl: float, instrument: Instrument, risk_pct: float
+    ) -> float | None:
+        """Volume dimensionado pelo risco configurado (história 30).
 
-        Conta do banco: o teto é por dia, não por execução do processo.
+        `volume = (equity * risco%) / (distância_sl * contract_size)`,
+        arredondado **para baixo** no `volume_step` do broker — nunca para
+        cima, porque isso infla o risco real acima do configurado. Devolve
+        `None` quando o risco não paga nem o lote mínimo do broker: a ordem é
+        rejeitada em vez de sair sub-dimensionada (lote mínimo fixo) ou
+        sobre-arriscada (arredondar para cima até o mínimo).
         """
-        inicio = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        total = session.execute(
-            select(func.count())
-            .select_from(Trade)
-            .where(Trade.created_at >= inicio, Trade.status != TradeStatus.REJECTED)
-        ).scalar_one()
-        return int(total)
+        risco_monetario_alvo = equity * (risk_pct / 100.0)
+        volume_bruto = risco_monetario_alvo / (distancia_sl * instrument.contract_size)
+
+        # Epsilon absorve erro de ponto flutuante na divisão (ex.: 6.999999999997
+        # não pode arredondar para 6 quando o valor exato é 7).
+        passos = math.floor(volume_bruto / instrument.volume_step + 1e-9)
+        volume = round(passos * instrument.volume_step, 8)
+
+        if volume < instrument.min_volume:
+            return None
+
+        return min(volume, instrument.volume_max)
 
     @staticmethod
     def _get_or_create_instrument(session: Session, symbol: str, client: MT5Client) -> Instrument:
-        """Busca ou cria o instrumento, sincronizando `min_volume` com o broker.
+        """Busca ou cria o instrumento, sincronizando os limites de volume com o broker.
 
-        O lote mínimo é lido do broker a cada chamada, não só na criação: é o
-        broker quem decide esse valor, e ele pode mudar sem que o registro
-        local seja recriado.
+        Lote mínimo, passo, lote máximo e tamanho do contrato são lidos do
+        broker a cada chamada, não só na criação: é o broker quem decide esses
+        valores, e eles podem mudar sem que o registro local seja recriado.
         """
-        min_volume = client.get_symbol_info(symbol).volume_min
+        info = client.get_symbol_info(symbol)
 
         instrument = session.execute(
             select(Instrument).where(Instrument.symbol == symbol)
         ).scalar_one_or_none()
         if instrument is not None:
-            if instrument.min_volume != min_volume:
-                instrument.min_volume = min_volume
+            mudou = (
+                instrument.min_volume != info.volume_min
+                or instrument.volume_step != info.volume_step
+                or instrument.volume_max != info.volume_max
+                or instrument.contract_size != info.contract_size
+            )
+            if mudou:
+                instrument.min_volume = info.volume_min
+                instrument.volume_step = info.volume_step
+                instrument.volume_max = info.volume_max
+                instrument.contract_size = info.contract_size
                 session.commit()
             return instrument
 
-        instrument = Instrument(symbol=symbol, min_volume=min_volume)
+        instrument = Instrument(
+            symbol=symbol,
+            min_volume=info.volume_min,
+            volume_step=info.volume_step,
+            volume_max=info.volume_max,
+            contract_size=info.contract_size,
+        )
         session.add(instrument)
         session.commit()
         return instrument
