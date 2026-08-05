@@ -105,6 +105,9 @@ class Tick:
 class SymbolInfo:
     symbol: str
     volume_min: float
+    # Unidades da moeda base por lote. Sem isso não dá para converter volume em
+    # exposição monetária: 0.01 lote de EURUSD não é 0.01 de exposição, é 1.000.
+    contract_size: float = 100_000.0
 
 
 # `entry` de um deal no MT5: 0 = abertura, 1 = fechamento, 2 = reversão.
@@ -306,21 +309,23 @@ class MT5Client:
         reraise=True,
     )
     def get_symbol_info(self, symbol: str) -> SymbolInfo:
-        """Metadados do símbolo no broker. Hoje só o lote mínimo negociável.
+        """Metadados do símbolo no broker: lote mínimo e tamanho do contrato.
 
-        Sem fallback para 0.01: um broker que exige mais que o padrão e não
-        respondeu é ausência de informação, não "aceita o mínimo comum".
+        Sem fallback para 0.01 no lote mínimo: um broker que exige mais que o
+        padrão e não respondeu é ausência de informação, não "aceita o mínimo
+        comum".
         """
         self._assert_conectado()
         raw = self.terminal.symbol_info(symbol)
         if raw is None:
             raise MT5ConnectionError(f"symbol_info({symbol}) vazio: {self._erro()}")
 
+        contract_size = float(getattr(raw, "trade_contract_size", 0) or 100_000.0)
         volume_min = float(raw.volume_min)
         if volume_min <= 0:
             raise MT5ConnectionError(f"volume_min inválido para {symbol}: {volume_min}")
 
-        return SymbolInfo(symbol=symbol, volume_min=volume_min)
+        return SymbolInfo(symbol=symbol, volume_min=volume_min, contract_size=contract_size)
 
     def get_ticks(self, symbols: list[str]) -> dict[str, Tick]:
         """Ticks de vários símbolos. Falha inteira se qualquer um falhar.

@@ -28,9 +28,10 @@ from backend.db import session_scope
 from backend.execution.kill_switch import is_kill_switch_active
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
-from backend.models.enums import Direction, Side
+from backend.models.enums import Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
+from backend.models.trade import Trade
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -150,6 +151,22 @@ class BotRunner:
             logger.warning("runner.atr_invalido", symbol=symbol, atr=atr)
             return
 
+        # Uma posição por símbolo. O sinal técnico persiste por vários ciclos;
+        # sem esta trava o bot empilharia uma posição por minuto no mesmo par.
+        if self._tem_posicao_aberta(client, symbol):
+            logger.debug("runner.posicao_ja_aberta", symbol=symbol)
+            return
+
+        # Teto diário de ordens (§4 do PRD).
+        enviados = self._trades_de_hoje(session)
+        if enviados >= self.settings.max_trades_per_day:
+            logger.info(
+                "runner.teto_diario_atingido",
+                enviados=enviados,
+                limite=self.settings.max_trades_per_day,
+            )
+            return
+
         account = client.get_account_info()
         tick = client.get_tick(symbol)
         instrument = self._get_or_create_instrument(session, symbol, client)
@@ -205,19 +222,56 @@ class BotRunner:
         ).scalar_one()
         return abs(float(total))
 
-    @staticmethod
-    def _exposicao_aberta(client: MT5Client, equity: float) -> float:
+    def _exposicao_aberta(self, client: MT5Client, equity: float) -> float:
         """Exposição das posições abertas, em percentual do equity.
 
         Vem do broker, não do banco: posição aberta por fora do bot ainda
         consome risco da conta e precisa contar no limite de 3%.
+
+        O `contract_size` é indispensável aqui. Sem ele, 0.01 lote de EURUSD
+        conta como US$ 0,0115 em vez de US$ 1.154 — a exposição sai subestimada
+        em cinco ordens de grandeza e o limite de 3% nunca dispara.
         """
         if equity <= 0:
             # Equity não positivo é situação degenerada; devolver 100% faz o
             # risk manager barrar tudo, que é o comportamento seguro.
             return 100.0
-        exposto = sum(abs(p.volume * p.price_open) for p in client.get_positions())
+
+        exposto = 0.0
+        for p in client.get_positions():
+            try:
+                contract_size = client.get_symbol_info(p.symbol).contract_size
+            except MT5ConnectionError:
+                # Símbolo sem metadados: assume o contrato padrão em vez de
+                # ignorar a posição. Subestimar exposição é o erro perigoso.
+                contract_size = 100_000.0
+            exposto += abs(p.volume * contract_size * p.price_open)
+
         return (exposto / equity) * 100.0
+
+    @staticmethod
+    def _tem_posicao_aberta(client: MT5Client, symbol: str) -> bool:
+        """Já existe posição aberta neste símbolo?
+
+        Sem esta trava o bot reabre a mesma direção a cada ciclo enquanto o
+        sinal persistir — e um sinal técnico costuma persistir por vários
+        minutos. Em uma hora seriam 60 posições empilhadas no mesmo par.
+        """
+        return any(p.symbol == symbol for p in client.get_positions())
+
+    @staticmethod
+    def _trades_de_hoje(session: Session) -> int:
+        """Ordens enviadas hoje, para o teto diário (§4 do PRD).
+
+        Conta do banco: o teto é por dia, não por execução do processo.
+        """
+        inicio = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        total = session.execute(
+            select(func.count())
+            .select_from(Trade)
+            .where(Trade.created_at >= inicio, Trade.status != TradeStatus.REJECTED)
+        ).scalar_one()
+        return int(total)
 
     @staticmethod
     def _get_or_create_instrument(session: Session, symbol: str, client: MT5Client) -> Instrument:
