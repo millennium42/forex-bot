@@ -31,7 +31,7 @@
         "UPDATE e DELETE em audit_log falham",
         "client_request_id unico em trades"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 3,
@@ -42,7 +42,7 @@
         "nenhum fallback simulado",
         "retry com backoff exponencial"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 4,

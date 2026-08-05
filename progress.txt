@@ -40,3 +40,21 @@
 - pg_engine usa connect_timeout=3: sem Postgres de pÃ© o skip precisa ser em segundos.
 - stop_loss NOT NULL no banco: a regra "SL obrigatÃ³rio" vale mesmo se o risk manager for contornado.
 
+
+## [2026-08-05] - Historia 3: Conector MT5
+- backend/collection/mt5_client.py + backend/tests/test_mt5_client.py
+- **Aprendizados:**
+  - O terminal MT5 e injetado via Protocol (MT5Terminal). A injecao existe SO para teste; nao ha
+    caminho de codigo que substitua o modulo real em runtime. Isso preserva "sem mocks em producao".
+  - Import do MetaTrader5 e tardio (dentro de _load_terminal) porque o pacote e win32-only e o CI
+    roda em Linux. Sem isso, importar qualquer coisa da camada collection quebraria o CI.
+  - Segunda barreira do invariante de modo: alem da config, o connect() compara account.trade_mode
+    com settings.is_real_trading. Conta real com bot em demo derruba a sessao.
+  - trade_mode=1 (contest, caso do FTMO Challenge) conta como demo: nao e capital real.
+  - MT5ModeMismatchError NAO herda de MT5ConnectionError de proposito: o retry do tenacity so
+    captura o segundo. Retentar nao muda o tipo da conta.
+  - Tick com bid/ask <= 0 e rejeitado: zero e o que o MT5 devolve quando nao sabe.
+  - get_ticks falha inteira se um simbolo falhar - retorno parcial esconderia do pipeline que a
+    visao de mercado esta incompleta.
+  - mypy strict: `import MetaTrader5` sem stub retorna Any; use cast(MT5Terminal, MetaTrader5).
+---
