@@ -84,7 +84,7 @@
         "score normalizado em [-1,1]",
         "testado com series fixtures deterministicas"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 8,

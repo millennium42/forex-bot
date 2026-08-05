@@ -130,3 +130,29 @@
   - 170 testes, coverage 94% (97% no modulo novo). As unicas linhas descobertas sao os imports
     reais de transformers/textblob, ausentes nesta maquina e no CI.
 ---
+
+## [2026-08-05] - Historia 7: Technical analyzer
+- backend/analysis/technical_analyzer.py (IndicatorSnapshot, TechnicalScore, compute_indicators,
+  TechnicalAnalyzer), backend/tests/test_technical_analyzer.py, pandas-stubs no extra dev.
+- **Aprendizados:**
+  - Indicadores 100% da lib `ta` (RSIIndicator, MACD, BollingerBands, AverageTrueRange). O modulo
+    so normaliza e combina - nao ha formula de indicador escrita aqui.
+  - Convencao de sinal unica: positivo = vies de compra. RSI e Bollinger entram como reversao a
+    media; MACD entra como momento de tendencia. ATR nao e direcional: serve de escala.
+  - MACD normalizado por ATR (histograma / atr). Sem isso o componente fica em unidade de preco e
+    um par volatil domina o score so por oscilar mais.
+  - confianca = concordancia x intensidade: abs(soma) / soma(abs) vezes a media das magnitudes.
+    Componentes que se anulam derrubam a confianca mesmo com score alto. Score diz direcao,
+    confianca diz se ela foi sustentada por mais de um indicador.
+  - Pesos ficaram fixos e iguais de proposito. O peso versionado e da historia 8 (signal_fusion);
+    versionar peso em dois lugares seria duas fontes de verdade.
+  - Indicador em aquecimento (NaN) devolve neutral(), nao zero - mesma regra do sentiment. Mas
+    coluna OHLC ausente levanta ValueError: schema errado e bug de programacao, nao ausencia de
+    dado de mercado. Sao caminhos distintos.
+  - Serie OHLC constante deixa o RSI indefinido (sem ganho e sem perda -> NaN). A fixture "plana"
+    exercita o caminho de NaN, nao o caminho feliz.
+  - mypy strict exigiu pandas-stubs (import-untyped). Com os stubs, `pd.isna(float)` e tipado como
+    sempre falso e o warn_unreachable acusa o corpo do if -> usar math.isnan para escalar.
+  - Cai no RUF002 de novo (simbolo x unicode em docstring). O gotcha ja estava no AGENTS.md.
+  - 189 testes, coverage global 95%, 100% no modulo novo.
+---
