@@ -8,10 +8,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import CheckConstraint, Enum, Float, ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.models.base import Base, CreatedAtMixin, JSONType
+from backend.models.base import Base, CreatedAtMixin, JSONType, pg_enum
 from backend.models.enums import Direction
 
 
@@ -35,9 +35,7 @@ class Signal(Base, CreatedAtMixin):
         ForeignKey("instruments.id", ondelete="RESTRICT"), nullable=False, index=True
     )
 
-    direction: Mapped[Direction] = mapped_column(
-        Enum(Direction, name="direction", native_enum=True), nullable=False
-    )
+    direction: Mapped[Direction] = mapped_column(pg_enum(Direction, "direction"), nullable=False)
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     fused_score: Mapped[float] = mapped_column(Float, nullable=False)
 

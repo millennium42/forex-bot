@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Enum, Integer, String, Text
+from sqlalchemy import BigInteger, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.models.base import Base, CreatedAtMixin, TimestampTZ
+from backend.models.base import Base, CreatedAtMixin, TimestampTZ, pg_enum
 from backend.models.enums import DocumentSource
 
 
@@ -26,7 +26,7 @@ class Document(Base, CreatedAtMixin):
     )
 
     source: Mapped[DocumentSource] = mapped_column(
-        Enum(DocumentSource, name="document_source", native_enum=True),
+        pg_enum(DocumentSource, "document_source"),
         nullable=False,
         index=True,
     )

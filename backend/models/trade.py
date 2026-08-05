@@ -11,7 +11,6 @@ from datetime import datetime
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
-    Enum,
     Float,
     ForeignKey,
     Integer,
@@ -19,7 +18,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.models.base import Base, CreatedAtMixin, TimestampTZ
+from backend.models.base import Base, CreatedAtMixin, TimestampTZ, pg_enum
 from backend.models.enums import Side, TradeStatus
 
 
@@ -48,9 +47,9 @@ class Trade(Base, CreatedAtMixin):
         ForeignKey("signals.id", ondelete="RESTRICT"), nullable=True, index=True
     )
 
-    side: Mapped[Side] = mapped_column(Enum(Side, name="side", native_enum=True), nullable=False)
+    side: Mapped[Side] = mapped_column(pg_enum(Side, "side"), nullable=False)
     status: Mapped[TradeStatus] = mapped_column(
-        Enum(TradeStatus, name="trade_status", native_enum=True),
+        pg_enum(TradeStatus, "trade_status"),
         nullable=False,
         default=TradeStatus.PENDING,
         index=True,

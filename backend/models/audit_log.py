@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import BigInteger, Enum, Integer, String
+from sqlalchemy import BigInteger, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.models.base import Base, CreatedAtMixin, JSONType
+from backend.models.base import Base, CreatedAtMixin, JSONType, pg_enum
 from backend.models.enums import AuditEventType
 
 
@@ -26,7 +26,7 @@ class AuditLog(Base, CreatedAtMixin):
     )
 
     event_type: Mapped[AuditEventType] = mapped_column(
-        Enum(AuditEventType, name="audit_event_type", native_enum=True),
+        pg_enum(AuditEventType, "audit_event_type"),
         nullable=False,
         index=True,
     )

@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, CheckConstraint, Enum, Float, ForeignKey, Integer
+from sqlalchemy import Boolean, CheckConstraint, Float, ForeignKey, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
-from backend.models.base import Base, CreatedAtMixin
+from backend.models.base import Base, CreatedAtMixin, pg_enum
 from backend.models.enums import Direction
 
 
@@ -35,10 +35,10 @@ class Outcome(Base, CreatedAtMixin):
     # Previsto vs. realizado. `was_correct` é derivado na escrita e persistido
     # para que as consultas de performance não precisem recalcular a cada leitura.
     predicted_direction: Mapped[Direction | None] = mapped_column(
-        Enum(Direction, name="direction", native_enum=True), nullable=True
+        pg_enum(Direction, "direction"), nullable=True
     )
     actual_direction: Mapped[Direction] = mapped_column(
-        Enum(Direction, name="direction", native_enum=True), nullable=False
+        pg_enum(Direction, "direction"), nullable=False
     )
     was_correct: Mapped[bool] = mapped_column(Boolean, nullable=False, index=True)
 

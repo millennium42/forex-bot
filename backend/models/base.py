@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Any, ClassVar
 
-from sqlalchemy import JSON, DateTime, MetaData, func
+from sqlalchemy import JSON, DateTime, Enum, MetaData, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -24,6 +25,27 @@ JSONType = JSONB().with_variant(JSON(), "sqlite")
 
 # Sempre timezone-aware. Horário de trade sem timezone é bug esperando acontecer.
 TimestampTZ = DateTime(timezone=True)
+
+
+def pg_enum(enum_cls: type[StrEnum], name: str) -> Enum:
+    """Coluna de enum que persiste o **valor**, não o nome do membro.
+
+    Sem `values_callable`, o SQLAlchemy grava `KILL_SWITCH_TRIGGERED` — o nome
+    do membro Python — enquanto o tipo criado pela migration só aceita
+    `kill_switch_triggered`. O INSERT estoura com `InvalidTextRepresentation`.
+
+    O bug não aparece nos testes em SQLite: lá o tipo vira um CHECK gerado a
+    partir do mesmo mapeamento, ficando internamente consistente. Só o Postgres,
+    com o tipo vindo da migration, expõe a divergência.
+
+    Use esta função em vez de `Enum(...)` direto em todo modelo.
+    """
+    return Enum(
+        enum_cls,
+        name=name,
+        native_enum=True,
+        values_callable=lambda cls: [membro.value for membro in cls],
+    )
 
 
 class Base(DeclarativeBase):
