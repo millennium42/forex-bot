@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -24,6 +25,21 @@ app = FastAPI(
     title="Forex Bot API",
     description="API REST e WebSocket para bot de trading",
     version="1.0.0",
+)
+
+# Origens explícitas, não "*". Esta API dispara ordens e aciona o kill switch:
+# qualquer página aberta no navegador do operador não pode falar com ela.
+# `allow_origins=["*"]` com `allow_credentials=True` é, aliás, rejeitado pelos
+# próprios navegadores — a combinação nunca funcionou de verdade.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 app.include_router(promotion.router)
