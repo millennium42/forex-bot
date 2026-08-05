@@ -12,3 +12,18 @@
   Exige duas condições independentes (`TRADING_MODE=real` + `REAL_TRADING_UNLOCKED=true`) para
   que um typo em uma variável de ambiente jamais habilite conta real.
 - API/workers ficam fora de container: o conector MT5 exige terminal nativo no mesmo host.
+
+[2026-08-04] História 2 — Modelos + migrations
+- Append-only do audit_log ficou como trigger no Postgres (BEFORE UPDATE OR DELETE por linha
+  + BEFORE TRUNCATE por statement). TRUNCATE precisa de trigger próprio: não dispara o de linha.
+- Dois níveis de teste de banco: SQLite in-memory (constraints portáveis, roda em qualquer
+  máquina) e Postgres via Alembic (trigger, enum nativo, JSONB) sob o marker `integration`.
+- SQLite ignora FK por default -> listener com PRAGMA foreign_keys=ON no conftest, senão os
+  testes de FK passariam de mentira.
+- SQLite só autoincrementa INTEGER PRIMARY KEY: audit_log.id usa
+  BigInteger().with_variant(Integer(), "sqlite").
+- Enum `direction` aparece em signals e outcomes; na migration os tipos são criados uma vez com
+  postgresql.ENUM(create_type=False) + .create(bind, checkfirst=True), senão o segundo
+  create_table falha com "type already exists".
+- pg_engine usa connect_timeout=3: sem Postgres de pé o skip precisa ser em segundos.
+- stop_loss NOT NULL no banco: a regra "SL obrigatório" vale mesmo se o risk manager for contornado.
