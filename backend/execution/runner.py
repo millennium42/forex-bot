@@ -14,14 +14,26 @@ couber no limite de 1% do equity. Não cabendo, não opera.
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import func, select
 
-from backend.analysis.signal_fusion import FusedSignal, fuse_signals
-from backend.analysis.technical_analyzer import TechnicalAnalyzer, compute_indicators
+from backend.analysis.sentiment_analyzer import (
+    SentimentAnalyzer,
+    SentimentScore,
+    SentimentUnavailableError,
+)
+from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal, fuse_signals
+from backend.analysis.technical_analyzer import (
+    IndicatorSnapshot,
+    TechnicalAnalyzer,
+    TechnicalScore,
+    compute_indicators,
+)
+from backend.collection.documents import recent_documents
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.config import Settings, get_settings
 from backend.db import session_scope
@@ -31,6 +43,7 @@ from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValida
 from backend.models.enums import Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
+from backend.models.signal import Signal
 from backend.models.trade import Trade
 
 if TYPE_CHECKING:
@@ -38,11 +51,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Timeframe M1 do MT5. Constante local para não obrigar o import do pacote
-# win32-only só para ler um inteiro.
-TIMEFRAME_M1 = 1
-
-# Candles suficientes para o indicador mais longo (MACD 26 + sinal 9).
+# Candles suficientes para o indicador mais longo (MACD 26 + sinal 9),
+# independente do timeframe configurado (`settings.timeframe`): a contagem é
+# em número de candles, não em tempo.
 CANDLES_POR_CICLO = 120
 
 # Take profit a 2x a distância do stop: relação risco/retorno de 1:2.
@@ -57,11 +68,13 @@ class BotRunner:
         symbols: list[str],
         interval_seconds: int = 60,
         settings: Settings | None = None,
+        sentiment_analyzer: SentimentAnalyzer | None = None,
     ) -> None:
         self.symbols = symbols
         self.interval_seconds = interval_seconds
         self.settings = settings or get_settings()
         self.analyzer = TechnicalAnalyzer()
+        self._sentiment_analyzer = sentiment_analyzer
 
     # -- laço principal ------------------------------------------------------
     def run(self, max_cycles: int | None = None) -> None:
@@ -115,7 +128,7 @@ class BotRunner:
         session: Session,
         order_manager: OrderManager,
     ) -> None:
-        candles = client.get_candles(symbol, TIMEFRAME_M1, CANDLES_POR_CICLO)
+        candles = client.get_candles(symbol, self.settings.mt5_timeframe, CANDLES_POR_CICLO)
         indicadores = compute_indicators(candles)
         if indicadores is None:
             # Série curta ou indicador indefinido. Não é erro — é ausência de
@@ -123,7 +136,9 @@ class BotRunner:
             logger.debug("runner.sem_indicadores", symbol=symbol)
             return
 
-        fused = fuse_signals(technical=self.analyzer.analyze(candles), sentiment=None)
+        technical = self.analyzer.analyze(candles)
+        sentiment = self._obter_sentimento(session, symbol)
+        fused = fuse_signals(technical=technical, sentiment=sentiment)
         logger.info(
             "runner.avaliado",
             symbol=symbol,
@@ -131,10 +146,101 @@ class BotRunner:
             confianca=round(fused.confidence, 3),
         )
 
+        instrument = self._get_or_create_instrument(session, symbol, client)
+        signal = self._registrar_signal(
+            session, instrument, fused, technical, indicadores, sentiment
+        )
+
         if fused.direction is Direction.HOLD:
             return
 
-        self._executar(symbol, fused, indicadores.atr, client, session, order_manager)
+        if fused.confidence < self.settings.min_signal_confidence:
+            # Direção existe, mas a convicção por trás dela não passa no piso
+            # calibrado (história 27) — sem este corte, um sinal de 7% de
+            # confiança era executado como se fosse de 70%.
+            logger.info(
+                "runner.confianca_insuficiente",
+                symbol=symbol,
+                confianca=round(fused.confidence, 3),
+                limiar=self.settings.min_signal_confidence,
+            )
+            return
+
+        self._executar(
+            symbol, fused, indicadores.atr, client, session, order_manager, instrument, signal.id
+        )
+
+    def _registrar_signal(
+        self,
+        session: Session,
+        instrument: Instrument,
+        fused: FusedSignal,
+        technical: TechnicalScore,
+        indicadores: IndicatorSnapshot,
+        sentiment: SentimentScore | None,
+    ) -> Signal:
+        """Grava a decisão antes de qualquer execução — inclusive quando é HOLD.
+
+        Sem este registro, `trade.signal_id` fica nulo e o outcome (história 12)
+        não tem previsão para comparar com o resultado. HOLD também é gravado:
+        a decisão de não operar é dado de aprendizado para calibrar o filtro de
+        confiança (história 27), não só as decisões que viraram ordem.
+        """
+        signal = Signal(
+            instrument_id=instrument.id,
+            direction=fused.direction,
+            confidence=fused.confidence,
+            fused_score=fused.score,
+            sentiment_score=sentiment.score if sentiment is not None else None,
+            sentiment_confidence=sentiment.confidence if sentiment is not None else None,
+            technical_score=technical.score,
+            weight_version=fused.weight_version,
+            inputs={
+                "indicators": asdict(indicadores),
+                "technical_components": technical.components,
+                "weights": {
+                    "technical": DEFAULT_WEIGHTS.technical,
+                    "sentiment": DEFAULT_WEIGHTS.sentiment,
+                    "version": fused.weight_version,
+                },
+            },
+        )
+        session.add(signal)
+        session.commit()
+        return signal
+
+    def _obter_sentimento(self, session: Session, symbol: str) -> SentimentScore | None:
+        """Sentimento do par a partir de documentos recentes, ou `None` sem eles.
+
+        A janela de recência (`sentiment_lookback_minutes`) garante que um
+        documento velho não influencie a decisão de agora. Ausência de
+        documento ou backend de NLP indisponível resultam em `None`, nunca em
+        score neutro forjado — o `fuse_signals` já sabe degradar a confiança
+        quando o sentimento é `None`.
+        """
+        desde = datetime.now(UTC) - timedelta(minutes=self.settings.sentiment_lookback_minutes)
+        documentos = recent_documents(session, symbol, desde)
+        if not documentos:
+            return None
+        try:
+            return self._get_sentiment_analyzer().analyze_documents(documentos)
+        except SentimentUnavailableError as exc:
+            # Mesma postura best-effort dos coletores: falta de backend de NLP
+            # não pode derrubar o ciclo, só empobrecer a decisão para "sem
+            # sentimento".
+            logger.warning("runner.sentimento_indisponivel", symbol=symbol, erro=str(exc))
+            return None
+
+    def _get_sentiment_analyzer(self) -> SentimentAnalyzer:
+        """Carrega o analisador sob demanda — só quando há documento para pontuar.
+
+        Mesmo padrão das outras dependências pesadas (MT5Terminal, backend de
+        NLP): a injeção via construtor existe para teste, o runtime carrega o
+        modelo de verdade na primeira vez que é preciso.
+        """
+        if self._sentiment_analyzer is None:
+            self._sentiment_analyzer = SentimentAnalyzer(settings=self.settings)
+        return self._sentiment_analyzer
 
     def _executar(
         self,
@@ -144,6 +250,8 @@ class BotRunner:
         client: MT5Client,
         session: Session,
         order_manager: OrderManager,
+        instrument: Instrument,
+        signal_id: int | None = None,
     ) -> None:
         if atr <= 0:
             # ATR zero significa volatilidade não medida. Sem ela não há stop
@@ -169,7 +277,6 @@ class BotRunner:
 
         account = client.get_account_info()
         tick = client.get_tick(symbol)
-        instrument = self._get_or_create_instrument(session, symbol, client)
 
         side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
         entry = tick.ask if side is Side.BUY else tick.bid
@@ -204,6 +311,7 @@ class BotRunner:
             daily_loss=self._perda_do_dia(session),
             current_exposure=self._exposicao_aberta(client, account.equity),
             trade_monetary_risk=risco_monetario,
+            signal_id=signal_id,
         )
 
     # -- estado real, nunca presumido ---------------------------------------

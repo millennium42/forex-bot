@@ -8,10 +8,11 @@ coletores tenham exatamente o mesmo comportamento de idempotência.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from datetime import datetime
 from typing import Protocol
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -62,3 +63,24 @@ def store_items(session: Session, items: Iterable[CollectedItem]) -> int:
         inseridos += 1
 
     return inseridos
+
+
+def recent_documents(session: Session, symbol: str, since: datetime) -> list[Document]:
+    """Documentos publicados a partir de `since` que mencionam o símbolo.
+
+    `documents` não tem coluna de símbolo — nem toda fonte declara o par
+    explicitamente — então o match é por substring em título ou conteúdo. Cobre
+    a cashtag do coletor de Twitter (`$EURUSD` contém `EURUSD`) e a menção
+    solta numa notícia.
+    """
+    padrao = f"%{symbol}%"
+    return list(
+        session.execute(
+            select(Document)
+            .where(
+                Document.created_at >= since,
+                or_(Document.content.ilike(padrao), Document.title.ilike(padrao)),
+            )
+            .order_by(Document.created_at.desc())
+        ).scalars()
+    )

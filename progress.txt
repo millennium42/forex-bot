@@ -390,4 +390,94 @@
     passado como `terminal=` em teste (três arquivos) precisou do método novo para o mypy strict
     aceitar a injeção.
 ---
+
+## [2026-08-05] — História 24: Runner persiste o Signal
+- O runner passou a gravar um `Signal` a cada `_process_symbol`, logo depois da fusão e antes de
+  qualquer decisão de executar — inclusive quando a direção é HOLD. `trade.signal_id` agora aponta
+  para o `Signal` que originou a ordem.
+- Arquivos alterados: `backend/execution/runner.py` (`_registrar_signal` novo,
+  `_get_or_create_instrument` chamado em `_process_symbol` em vez de só em `_executar`,
+  `_executar` recebe `instrument` e `signal_id` como parâmetros), `backend/tests/test_runner.py`
+  (testes existentes de `_executar` atualizados para passar `instrument`; testes novos: signal
+  gravado antes da ordem e ligado ao trade, signal gravado em HOLD, outcome de trade com signal
+  tem `predicted_direction` não nulo).
+- **Aprendizados para as próximas iterações:**
+  - `instrument_id` é NOT NULL em `signals`, então o instrumento precisa existir mesmo no caminho
+    HOLD — não dá para adiar a busca do broker (`get_symbol_info`) para dentro de `_executar` como
+    antes (história 23). O efeito colateral é uma chamada a mais ao broker por ciclo (mesmo em
+    HOLD), aceito porque a alternativa (Signal sem instrument_id) violaria o schema.
+  - `signal.inputs` guarda `asdict(indicadores)` (o `IndicatorSnapshot`, frozen+slots — `asdict`
+    funciona normalmente porque usa `dataclasses.fields()`, não `__dict__`), os componentes do
+    técnico e os pesos efetivamente usados (`DEFAULT_WEIGHTS`, já que o runner ainda chama
+    `fuse_signals` sem override). Isso deixa o weight_optimizer (história 13) e a calibração de
+    confiança (história 27) reproduzíveis sem precisar recomputar indicador.
+  - `weight_version` na coluna vem de `fused.weight_version`, não de `DEFAULT_WEIGHTS.version`
+    direto — se um dia o runner passar a escolher pesos dinamicamente, o campo já reflete a
+    escolha real em vez de ficar hard-coded.
+  - Teste de HOLD determinístico: monkeypatch em `runner_module.fuse_signals` devolvendo um
+    `FusedSignal(direction=HOLD, ...)` fixo. Tentar forçar HOLD só com fixture de candles é frágil
+    — o técnico é reversão à média (gotcha já registrado na história 21) e a direção observada não
+    é garantida.
+---Nenhuma historia concluida na iteracao 2. Parando para inspecao.
+Nenhuma historia concluida na iteracao 1. Parando para inspecao.
+
+## [2026-08-05] — História 26: Timeframe configurável, default M5
+- `Settings.timeframe` (nome, default "M5") substitui a constante `TIMEFRAME_M1` hard-coded do
+  runner. `TIMEFRAME_MAP` traduz nome -> inteiro real do MT5 (M1=1, M5=5, M15=15, M30=30,
+  H1=16385, valores confirmados via `import MetaTrader5` nesta máquina Windows).
+  `field_validator` rejeita nome fora do mapa com `ValidationError` no boot — não há valor seguro
+  para degradar aqui (diferente do `trading_mode`), então falha explícita é o comportamento
+  correto. `Settings.mt5_timeframe` expõe o inteiro já traduzido.
+- Arquivos alterados: `backend/config.py` (`TIMEFRAME_MAP`, campo `timeframe`, validator,
+  property `mt5_timeframe`), `backend/execution/runner.py` (removida a constante local
+  `TIMEFRAME_M1`, `_process_symbol` usa `self.settings.mt5_timeframe`), `backend/tests/test_config.py`
+  (mapeamento nome->constante, default M5, ValidationError para nome inválido).
+- **Aprendizados para as próximas iterações:**
+  - `CANDLES_POR_CICLO` (120) não mudou: é contagem de candles, não de tempo, então continua
+    suficiente para o indicador mais longo (MACD 26+9) em qualquer timeframe do mapa.
+  - Padrão novo registrado em AGENTS.md: constante externa mágica de broker vira nome + `field_validator`
+    + mapa local, com falha explícita no boot (não degradação silenciosa) quando o valor é
+    desconhecido — o oposto da filosofia de "fail-closed para demo" do trading_mode, porque aqui
+    não existe timeframe "seguro" para cair de volta.
+  - Constatei que a história 25 (sentimento entra na decisão) já estava com `passes: true` no
+    prd.json mas nunca tinha entrado na tabela de estado do AGENTS.md — corrigido nesta iteração.
+---
+
+## [2026-08-05] — História 27: Filtro de confiança mínima calibrado
+- `Settings.min_signal_confidence` (config.py, default 0.1) é o novo gate: em `_process_symbol`,
+  depois de descartar HOLD e antes de `_executar`, o runner rejeita e loga
+  (`runner.confianca_insuficiente`) qualquer sinal com `fused.confidence < min_signal_confidence`.
+  O `Signal` já foi gravado antes desse corte (história 24), então a rejeição também vira dado de
+  aprendizado, não só a execução.
+- `scripts/calibrar_confianca.py`: lê todo `signal.confidence` do banco via `session_scope()`,
+  reporta os percentis 50/75/90/95 e quantos sinais sobreviveriam (`confidence >= percentil`) em
+  cada um. Com menos de `AMOSTRA_MINIMA=100` sinais, recusa sugerir número e diz por quê.
+- **Calibração real rodada nesta iteração:** `uv run python scripts/calibrar_confianca.py` contra
+  o Postgres de desenvolvimento (docker compose, mesma instância citada na "Primeira execução real
+  do bot") devolveu **n=0 sinais gravados** — os 9 `Trade`/7 `Outcome` existentes na conta demo são
+  anteriores à história 24 (que introduziu a persistência de `Signal`), então não há nenhuma
+  decisão histórica com `confidence` para calibrar ainda.
+  - **Decisão de default dado n=0:** não inventar um número. `min_signal_confidence=0.1` replica o
+    único limiar já calibrado no pipeline (`fuse_signals(threshold=0.1)`, que decide BUY/SELL/HOLD
+    pelo score) — é o piso mínimo defensável, não um valor novo tirado do ar. **Ação pendente para
+    a próxima calibração:** depois que o bot rodar tempo suficiente para acumular >=100 `Signal`
+    reais, rodar `scripts/calibrar_confianca.py` de novo e revisar `MIN_SIGNAL_CONFIDENCE` a partir
+    do percentil que sobra depois de descartar os sinais de baixa convicção (ex.: manter os que
+    ficam no top 50% por confiança, ajustando conforme o win rate observado no `Outcome`).
+- Arquivos alterados: `backend/config.py` (`min_signal_confidence`), `backend/execution/runner.py`
+  (`_process_symbol`), `backend/tests/test_runner.py` (3 testes novos: confiança abaixo/igual/acima
+  do limiar), `scripts/calibrar_confianca.py` (novo).
+- **Aprendizados para as próximas iterações:**
+  - Ver padrão novo em Codebase Patterns (limiar calibrado por dado real, não por número no ar).
+  - `scripts/` não entra em `[tool.coverage.run] source = ["backend"]` nem em `mypy backend` — o
+    script de calibração não precisa (nem pode) contar para o coverage de 80% do módulo tocado, e
+    o mypy strict do CI não o verifica. Validei a lógica de percentis isoladamente com dado
+    sintético (`statistics.quantiles`, semente fixa) antes de rodar contra o banco real, já que o
+    banco real não tinha amostra suficiente para exercitar esse ramo.
+  - `statistics.quantiles(valores, n=100)` devolve 99 cortes; o percentil `p` é `cortes[p-1]` — não
+    há corte para p=100 (seria o próprio máximo), mas como os percentis pedidos (50/75/90/95) são
+    todos < 100, não precisei tratar esse caso extremo.
+  - Teste do filtro reaproveita o mesmo padrão de HOLD determinístico da história 24 (monkeypatch
+    em `runner_module.fuse_signals` devolvendo um `FusedSignal` fixo) — mais simples e robusto do
+    que tentar forçar uma confiança específica via fixture de candles reais.
 ---

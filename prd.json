@@ -276,7 +276,7 @@
         "sinal HOLD tambem e gravado: a decisao de nao operar e dado de aprendizado",
         "outcome de um trade com signal_id preenchido tem predicted_direction nao nulo"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 25,
@@ -290,7 +290,7 @@
         "confianca fundida passa a poder ultrapassar 0.7 quando as duas pontas concordam",
         "teste cobre: sem documento, documentos concordantes e documentos discordantes"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 26,
@@ -303,7 +303,7 @@
         "quantidade de candles por ciclo continua suficiente para o indicador mais longo",
         "teste garante o mapeamento nome -> constante do MT5"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 27,
@@ -317,7 +317,7 @@
         "se houver menos de 100 sinais gravados, o script diz que a amostra e insuficiente em vez de sugerir um numero",
         "teste cobre sinal abaixo, igual e acima do limiar"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }

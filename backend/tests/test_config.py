@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.config import Settings, TradingMode, get_settings
+from backend.config import TIMEFRAME_MAP, Settings, TradingMode, get_settings
 
 
 def _settings(**overrides: object) -> Settings:
@@ -63,3 +63,25 @@ def test_get_settings_e_memoizado() -> None:
     get_settings.cache_clear()
     assert get_settings() is get_settings()
     get_settings.cache_clear()
+
+
+def test_default_de_timeframe_e_m5() -> None:
+    assert _settings().timeframe == "M5"
+    assert _settings().mt5_timeframe == TIMEFRAME_MAP["M5"]
+
+
+@pytest.mark.parametrize(
+    ("nome", "constante"),
+    [("M1", 1), ("M5", 5), ("M15", 15), ("M30", 30), ("H1", 16_385)],
+)
+def test_mapeamento_nome_para_constante_do_mt5(nome: str, constante: int) -> None:
+    assert TIMEFRAME_MAP[nome] == constante
+    assert _settings(timeframe=nome).mt5_timeframe == constante
+
+
+@pytest.mark.parametrize("valor", ["m5", "M2", "D1", "", "5"])
+def test_timeframe_invalido_falha_no_boot(valor: str) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _settings(timeframe=valor)
