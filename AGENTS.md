@@ -9,7 +9,8 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | História | Status |
 |---|---|
 | 1 — Scaffold do repo | ✅ |
-| 2–20 | ⏳ pendentes |
+| 2 — Modelos + migrations | ✅ |
+| 3–20 | ⏳ pendentes |
 
 ---
 
@@ -39,6 +40,20 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `backend/tests/*` já tem per-file-ignore.
 - `get_settings()` é `lru_cache`. Em teste, instancie `Settings(_env_file=None, **overrides)`
   para não vazar o `.env` local para dentro da asserção.
+- **Dois níveis de teste de banco.** Fixture `session` = SQLite in-memory (constraints portáveis,
+  roda em qualquer máquina); fixture `pg_engine` = Postgres real via Alembic, sob o marker
+  `integration`, pulado quando o banco não responde em 3s. Trigger, enum nativo e JSONB só são
+  exercitados no segundo nível.
+- SQLite ignora foreign keys por default — o `conftest.py` liga `PRAGMA foreign_keys=ON` por
+  listener. Sem isso, teste de FK passa de mentira.
+- SQLite só autoincrementa `INTEGER PRIMARY KEY`: use
+  `BigInteger().with_variant(Integer(), "sqlite")` em PK grande.
+- Um mesmo tipo enum usado em duas tabelas (`direction` em `signals` e `outcomes`) precisa, na
+  migration, de `postgresql.ENUM(..., create_type=False)` + `.create(bind, checkfirst=True)`
+  antes dos `create_table` — senão o segundo falha com "type already exists".
+- `ruff` reclama de `type_annotation_map` como mutável de classe: anote com `ClassVar[dict[Any, Any]]`.
+- `jq` **não** está instalado e o winget falhou nele. Os scripts do Ralph leem `prd.json` via
+  Python (`uv run python -c`), sem jq.
 
 ---
 
