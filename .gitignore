@@ -38,3 +38,10 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Artefatos de ferramentas de agente (Ruflo / claude-flow) - estado local, nao do projeto
+ruvector.db
+.swarm/
+.hive-mind/
+.claude-flow/
+*.db-journal
