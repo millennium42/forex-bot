@@ -130,20 +130,26 @@ Três problemas que o loop autônomo deixou passar e foram corrigidos à mão:
 
 ---
 
-## 6. O que falta — histórias 21 a 23
+## 6. Backlog
 
-Estão em `prd.json` com `passes: false`. Rode o Ralph para continuar:
+**23/23 histórias concluídas.** `prd.json` está sem nada em aberto.
+
+Para retomar com histórias novas, acrescente-as ao `prd.json` e rode:
 
 ```bash
-.\scripts\ralph\ralph.ps1 3        # Windows
-./scripts/ralph/ralph.sh 3         # Git Bash / Linux
+.\scripts\ralph\ralph.ps1 5        # Windows
+./scripts/ralph/ralph.sh 5         # Git Bash / Linux
 ```
 
-| # | História | Por que importa |
-|---|---|---|
-| 21 | Testes do `BotRunner` | O motor foi reescrito nesta sessão e **não tem teste**. É o módulo que mais precisa: um bug ali envia ordem errada. |
-| 22 | Dashboard rico | Gráficos, insights, modais e abas. Ver §7. |
-| 23 | Lote mínimo por símbolo | `VOLUME_MINIMO = 0.01` está hard-coded no runner. O correto é ler `symbol_info(symbol).volume_min` do MT5 — alguns brokers exigem mais. |
+Melhorias identificadas mas **não** transformadas em história (ninguém pediu):
+
+- O `runner` avalia todos os símbolos a cada ciclo sem paralelismo. Com muitos
+  pares o ciclo alonga linearmente.
+- O sentimento entra como `None` no `fuse_signals` do runner — os coletores
+  gravam documentos, mas o runner ainda não puxa o score correspondente.
+  Hoje a decisão é puramente técnica.
+- Não há reconciliação automática agendada; `position_tracker` existe mas
+  precisa ser acionado por um beat do Celery.
 
 ---
 
