@@ -200,7 +200,11 @@ class OrderManager:
         # Sucesso
         trade.status = TradeStatus.OPEN
         trade.mt5_order_id = getattr(result, "order", None)
-        trade.mt5_position_id = getattr(result, "deal", None)
+        # O ticket da POSIÇÃO, não o do deal. Numa ordem a mercado o MT5 usa o
+        # ticket da ordem como ticket da posição resultante; `result.deal` é
+        # outro identificador e não casa com nada em `positions_get()`.
+        # Guardar o deal aqui fazia a reconciliação nunca encontrar a posição.
+        trade.mt5_position_id = getattr(result, "order", None)
         trade.entry_price = getattr(result, "price", None)
         # Sem `opened_at` não há duração, e sem duração o outcome não é gravável.
         trade.opened_at = datetime.now(UTC)

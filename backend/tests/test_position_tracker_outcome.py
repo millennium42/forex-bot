@@ -258,6 +258,36 @@ def test_encerramento_gera_evento_de_auditoria(session: Session) -> None:
     assert evento.payload["trade_id"] == trade.id
 
 
+def test_trade_fechado_por_close_trade_tambem_gera_outcome(session: Session) -> None:
+    """Fechamento explícito não passa pela reconciliação de posição sumida.
+
+    Sem a varredura por outcome ausente, todo trade encerrado pelo operador ou
+    pelo kill switch sumiria do aprendizado.
+    """
+    trade = _trade_aberto(session)
+    trade.status = TradeStatus.CLOSED  # já fechado por close_trade
+    session.commit()
+
+    tracker, _ = _tracker(session, [_deal(price=1.1040, profit=4.0)])
+    tracker.reconcile()
+
+    outcome = session.scalar(select(Outcome).where(Outcome.trade_id == trade.id))
+    assert outcome is not None
+    assert outcome.pnl == pytest.approx(4.0)
+
+
+def test_reconciliacao_repetida_nao_duplica_outcome(session: Session) -> None:
+    """`outcomes.trade_id` é UNIQUE; a varredura precisa ser idempotente."""
+    trade = _trade_aberto(session)
+    tracker, _ = _tracker(session, [_deal(price=1.1040, profit=4.0)])
+
+    tracker.reconcile()
+    tracker.reconcile()
+
+    total = session.scalars(select(Outcome).where(Outcome.trade_id == trade.id)).all()
+    assert len(total) == 1
+
+
 def test_reconciliacao_consulta_o_historico_da_posicao_certa(session: Session) -> None:
     _trade_aberto(session)
     tracker, terminal = _tracker(session, [_deal(price=1.1040, profit=4.0)])

@@ -15,6 +15,7 @@ from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.learning.outcome_recorder import record_outcome
 from backend.models.audit_log import AuditLog
 from backend.models.enums import AuditEventType, TradeStatus
+from backend.models.outcome import Outcome
 from backend.models.trade import Trade
 
 logger = structlog.get_logger(__name__)
@@ -104,9 +105,52 @@ class PositionTracker:
                 )
                 self.db.add(event)
 
+        self._gravar_outcomes_pendentes()
         self.db.commit()
 
     # ------------------------------------------------------------------ #
+    def _gravar_outcomes_pendentes(self) -> None:
+        """Gera outcome para todo trade encerrado que ainda não tem um.
+
+        Um trade pode ser encerrado por dois caminhos: a reconciliação (stop ou
+        alvo dispararam) e o `close_trade` explícito (bot ou operador). Só o
+        primeiro gravava outcome, então fechamento manual sumia do aprendizado.
+
+        Varrer por ausência de outcome cobre os dois caminhos e é idempotente:
+        rodar de novo não duplica, porque `outcomes.trade_id` é UNIQUE.
+        """
+        pendentes = self.db.scalars(
+            select(Trade)
+            .outerjoin(Outcome, Outcome.trade_id == Trade.id)
+            .where(Trade.status == TradeStatus.CLOSED, Outcome.id.is_(None))
+        ).all()
+
+        for trade in pendentes:
+            position_id = trade.mt5_position_id or trade.mt5_order_id
+            if position_id is None:
+                continue
+
+            try:
+                deal = self.mt5_client.get_exit_deal(position_id)
+            except MT5ConnectionError:
+                return  # broker indisponível: tenta de novo no próximo ciclo
+
+            if deal is None:
+                continue
+
+            if trade.opened_at is None:
+                trade.opened_at = trade.created_at
+            if trade.closed_at is None:
+                trade.closed_at = deal.time
+
+            outcome = record_outcome(self.db, trade, exit_price=deal.price, pnl=deal.profit)
+            logger.info(
+                "position_tracker.outcome_pendente_gravado",
+                trade_id=trade.id,
+                pnl=deal.profit,
+                acertou=outcome.was_correct,
+            )
+
     def _encerrar_pelo_historico(self, trade: Trade) -> bool:
         """Fecha o trade a partir do deal de saída e grava o outcome.
 
