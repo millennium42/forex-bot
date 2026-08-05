@@ -94,6 +94,9 @@ class FakeTerminal:
     def positions_get(self) -> Any:
         return ()
 
+    def history_deals_get(self, *args: Any, **kwargs: Any) -> Any:
+        return ()
+
     def order_send(self, request: dict[str, Any]) -> Any:
         return SimpleNamespace(retcode=10009, order=123, deal=456, price=1.1, volume=0.1)
 

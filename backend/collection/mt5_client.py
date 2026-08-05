@@ -55,6 +55,7 @@ class MT5Terminal(Protocol):
     def copy_rates_from_pos(
         self, symbol: str, timeframe: int, start_pos: int, count: int
     ) -> Any: ...
+    def history_deals_get(self, *args: Any, **kwargs: Any) -> Any: ...
 
     @property
     def TRADE_ACTION_DEAL(self) -> int: ...  # noqa: N802
@@ -104,6 +105,34 @@ class Tick:
 class SymbolInfo:
     symbol: str
     volume_min: float
+
+
+# `entry` de um deal no MT5: 0 = abertura, 1 = fechamento, 2 = reversão.
+DEAL_ENTRY_OUT = 1
+
+
+@dataclass(frozen=True, slots=True)
+class Deal:
+    """Negócio executado. O deal de saída é a única fonte do preço real de fechamento.
+
+    O preço de fechamento não é o SL/TP configurado: slippage, gap e spread fazem
+    a execução sair diferente do nível pedido. Registrar o nível pedido como se
+    fosse o realizado envenenaria o aprendizado com um P&L que nunca existiu.
+    """
+
+    ticket: int
+    order: int
+    position_id: int
+    symbol: str
+    price: float
+    profit: float
+    volume: float
+    entry: int
+    time: datetime
+
+    @property
+    def is_exit(self) -> bool:
+        return self.entry == DEAL_ENTRY_OUT
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +369,39 @@ class MT5Client:
         wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
         reraise=True,
     )
+    def get_position_deals(self, position_id: int) -> list[Deal]:
+        """Deals de uma posição, incluindo a de fechamento.
+
+        Devolve lista vazia quando a posição não tem histórico — não é erro:
+        o MT5 pode ainda não ter propagado o fechamento. Quem chama decide se
+        tenta de novo no próximo ciclo.
+        """
+        self._assert_conectado()
+        raw = self.terminal.history_deals_get(position=position_id)
+        if raw is None:
+            return []
+
+        return [
+            Deal(
+                ticket=int(d.ticket),
+                order=int(getattr(d, "order", 0)),
+                position_id=int(getattr(d, "position_id", position_id)),
+                symbol=str(getattr(d, "symbol", "")),
+                price=float(d.price),
+                profit=float(getattr(d, "profit", 0.0)),
+                volume=float(getattr(d, "volume", 0.0)),
+                entry=int(getattr(d, "entry", 0)),
+                time=datetime.fromtimestamp(int(getattr(d, "time", 0)), tz=UTC),
+            )
+            for d in raw
+        ]
+
+    def get_exit_deal(self, position_id: int) -> Deal | None:
+        """Deal de fechamento da posição, ou None se ela ainda não fechou."""
+        saidas = [d for d in self.get_position_deals(position_id) if d.is_exit]
+        # Fechamento parcial gera vários deals de saída; o último encerra a posição.
+        return max(saidas, key=lambda d: d.time) if saidas else None
+
     def get_candles(self, symbol: str, timeframe: int, count: int) -> Any:
         """Busca histórico OHLC (Velás) de um símbolo como DataFrame pandas."""
         self._assert_conectado()

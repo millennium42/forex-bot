@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
+from backend.learning.outcome_recorder import record_outcome
 from backend.models.audit_log import AuditLog
 from backend.models.enums import AuditEventType, TradeStatus
 from backend.models.trade import Trade
@@ -61,19 +62,26 @@ class PositionTracker:
             matched_pos = pos_from_order or pos_from_deal or pos_from_ident
             if matched_pos:
                 mt5_matched_tickets.add(matched_pos.ticket)
-            else:
-                logger.warning("position_tracker.missing_in_mt5", trade_id=trade.id)
-                event = AuditLog(
-                    event_type=AuditEventType.RECONCILIATION_MISMATCH,
-                    client_request_id=trade.client_request_id,
-                    payload={
-                        "reason": "missing_in_mt5",
-                        "trade_id": trade.id,
-                        "mt5_order_id": trade.mt5_order_id,
-                        "mt5_position_id": trade.mt5_position_id,
-                    },
-                )
-                self.db.add(event)
+                continue
+
+            # A posição sumiu do broker. Antes de chamar isso de divergência,
+            # a explicação mais provável é a mais banal: ela fechou — no stop,
+            # no alvo, ou por intervenção manual no terminal.
+            if self._encerrar_pelo_historico(trade):
+                continue
+
+            logger.warning("position_tracker.missing_in_mt5", trade_id=trade.id)
+            event = AuditLog(
+                event_type=AuditEventType.RECONCILIATION_MISMATCH,
+                client_request_id=trade.client_request_id,
+                payload={
+                    "reason": "missing_in_mt5",
+                    "trade_id": trade.id,
+                    "mt5_order_id": trade.mt5_order_id,
+                    "mt5_position_id": trade.mt5_position_id,
+                },
+            )
+            self.db.add(event)
 
         for pos in mt5_positions:
             if pos.ticket not in mt5_matched_tickets:
@@ -97,3 +105,62 @@ class PositionTracker:
                 self.db.add(event)
 
         self.db.commit()
+
+    # ------------------------------------------------------------------ #
+    def _encerrar_pelo_historico(self, trade: Trade) -> bool:
+        """Fecha o trade a partir do deal de saída e grava o outcome.
+
+        Este é o elo que fecha o ciclo previsão → resultado. Sem ele o trade
+        ficaria `open` para sempre no banco, nenhum `Outcome` seria criado, e
+        tanto o weight optimizer quanto o promotion gate — que contam outcomes —
+        nunca teriam do que se alimentar.
+
+        Devolve `False` quando não foi possível encerrar; aí a divergência é
+        registrada normalmente e a tentativa se repete no próximo ciclo.
+        """
+        position_id = trade.mt5_position_id or trade.mt5_order_id
+        if position_id is None:
+            return False
+
+        try:
+            deal = self.mt5_client.get_exit_deal(position_id)
+        except MT5ConnectionError as exc:
+            logger.warning("position_tracker.historico_indisponivel", motivo=str(exc))
+            return False
+
+        if deal is None:
+            # Sem deal de saída a posição não fechou de fato — pode ser atraso de
+            # propagação do broker. Inventar um preço aqui envenenaria o
+            # aprendizado com um P&L que nunca existiu.
+            return False
+
+        trade.status = TradeStatus.CLOSED
+        trade.closed_at = deal.time
+        if trade.opened_at is None:
+            # Trades gravados antes de `opened_at` passar a ser preenchido. O
+            # `created_at` é o instante em que a ordem foi aceita — aproximação
+            # boa o suficiente para a duração, e melhor que descartar o outcome.
+            trade.opened_at = trade.created_at
+
+        outcome = record_outcome(self.db, trade, exit_price=deal.price, pnl=deal.profit)
+
+        self.db.add(
+            AuditLog(
+                event_type=AuditEventType.ORDER_CLOSED,
+                client_request_id=trade.client_request_id,
+                payload={
+                    "trade_id": trade.id,
+                    "exit_price": deal.price,
+                    "pnl": deal.profit,
+                    "origem": "reconciliacao",
+                },
+            )
+        )
+        logger.info(
+            "position_tracker.trade_encerrado",
+            trade_id=trade.id,
+            exit_price=deal.price,
+            pnl=deal.profit,
+            acertou=outcome.was_correct,
+        )
+        return True

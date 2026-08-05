@@ -6,6 +6,7 @@ passagem obrigatória pelo risk manager.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
@@ -201,6 +202,8 @@ class OrderManager:
         trade.mt5_order_id = getattr(result, "order", None)
         trade.mt5_position_id = getattr(result, "deal", None)
         trade.entry_price = getattr(result, "price", None)
+        # Sem `opened_at` não há duração, e sem duração o outcome não é gravável.
+        trade.opened_at = datetime.now(UTC)
 
         placed_event = AuditLog(
             event_type=AuditEventType.ORDER_PLACED,
@@ -317,7 +320,7 @@ class OrderManager:
         rc = getattr(result, "retcode", -1)
         if rc == retcode_done:
             trade.status = TradeStatus.CLOSED
-            # trade.closed_at = datetime.now(UTC)? It's managed somewhere else maybe
+            trade.closed_at = datetime.now(UTC)
 
             event = AuditLog(
                 event_type=AuditEventType.ORDER_CLOSED,

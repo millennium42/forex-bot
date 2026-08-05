@@ -21,6 +21,11 @@ class FakeTerminalForTracker:
             return None
         return self._positions
 
+    def history_deals_get(self, *args: Any, **kwargs: Any) -> Any:
+        # Sem histórico: a posição sumiu sem deal de saída, então continua
+        # sendo divergência — que é o que estes testes exercitam.
+        return ()
+
     def last_error(self) -> tuple[int, str]:
         return (2, "fake error")
 

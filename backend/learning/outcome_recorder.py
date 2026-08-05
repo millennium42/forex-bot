@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -15,6 +17,17 @@ class OutcomeError(Exception):
     """Exceção levantada para erros de validação ao gravar um outcome."""
 
     pass
+
+
+def _utc(momento: datetime) -> datetime:
+    """Garante datetime timezone-aware em UTC.
+
+    O Postgres devolve os timestamps com tzinfo, o SQLite dos testes de unidade
+    não. Subtrair um naive de um aware levanta TypeError, então a duração do
+    trade quebraria só no teste — ou só em produção, dependendo de onde o valor
+    nasceu.
+    """
+    return momento if momento.tzinfo is not None else momento.replace(tzinfo=UTC)
 
 
 def record_outcome(session: Session, trade: Trade, exit_price: float, pnl: float) -> Outcome:
@@ -41,7 +54,7 @@ def record_outcome(session: Session, trade: Trade, exit_price: float, pnl: float
     if trade.entry_price is None:
         raise OutcomeError("Trade precisa ter entry_price preenchido")
 
-    duration_seconds = int((trade.closed_at - trade.opened_at).total_seconds())
+    duration_seconds = int((_utc(trade.closed_at) - _utc(trade.opened_at)).total_seconds())
     if duration_seconds < 0:
         duration_seconds = 0
 

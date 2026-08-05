@@ -54,6 +54,9 @@ class FakeTerminal:
     def positions_get(self) -> Any:
         return ()
 
+    def history_deals_get(self, *args: Any, **kwargs: Any) -> Any:
+        return ()
+
     def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int) -> Any:
         return None
 
