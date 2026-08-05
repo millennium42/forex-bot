@@ -26,19 +26,25 @@ def test_kill_switch_db_logic(session: Session) -> None:
     trigger_kill_switch(session, reason="Teste 2", actor="system")
     # Actually wait, `select(func.count()).select_from(AuditLog)` is better.
     # We can just check the number of KILL_SWITCH_TRIGGERED events
-    events = session.scalars(select(AuditLog).where(AuditLog.event_type == AuditEventType.KILL_SWITCH_TRIGGERED)).all()  # noqa: E501
+    events = session.scalars(
+        select(AuditLog).where(AuditLog.event_type == AuditEventType.KILL_SWITCH_TRIGGERED)
+    ).all()
     assert len(events) == 1
 
     # Reseta
     reset_kill_switch(session, actor="admin")
     assert not is_kill_switch_active(session)
 
-    events_reset = session.scalars(select(AuditLog).where(AuditLog.event_type == AuditEventType.KILL_SWITCH_RESET)).all()  # noqa: E501
+    events_reset = session.scalars(
+        select(AuditLog).where(AuditLog.event_type == AuditEventType.KILL_SWITCH_RESET)
+    ).all()
     assert len(events_reset) == 1
 
     # Resetar de novo não deve criar evento duplicado
     reset_kill_switch(session, actor="admin")
-    events_reset2 = session.scalars(select(AuditLog).where(AuditLog.event_type == AuditEventType.KILL_SWITCH_RESET)).all()  # noqa: E501
+    events_reset2 = session.scalars(
+        select(AuditLog).where(AuditLog.event_type == AuditEventType.KILL_SWITCH_RESET)
+    ).all()
     assert len(events_reset2) == 1
 
 
@@ -59,6 +65,7 @@ def test_kill_switch_endpoints() -> None:
     testing_session_local = sessionmaker(bind=engine)
 
     from collections.abc import Iterator
+
     def override_get_db() -> Iterator[Session]:
         db = testing_session_local()
         try:

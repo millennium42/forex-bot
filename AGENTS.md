@@ -23,7 +23,11 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 13 — Weight optimizer | ✅ |
 | 14 — Backtester | ✅ |
 | 15 — Promotion gate | ✅ |
-| 16–20 | ⏳ pendentes |
+| 16 — API FastAPI | ✅ |
+| 17 — Dashboard Next.js | ✅ |
+| 18 — Kill switch | ✅ |
+| 19 — Observabilidade | ✅ |
+| 20 — Hardening | ✅ |
 
 ---
 

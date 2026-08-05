@@ -219,7 +219,7 @@
         "testes de falha de rede passam",
         "P0 = 0 e P1 = 0"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }

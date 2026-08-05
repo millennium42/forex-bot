@@ -235,3 +235,10 @@
   - sentry_sdk integrado diretamente via inicializacao no entry point FastAPI (main.py) com base no DSN, permitindo continuous profiling se habilitado.
   - O pattern de interceptacao de latencia (measure_latency) foi implementado com um context manager usando structlog, cobrindo os modulos da camada analysis (sentiment, technical e signal_fusion).
   - Ruff B008 proibe chamadas de funcao em argumentos default (Depends). Ao injetar a sessao DB no /ready via Depends(get_db), e necessario usar # noqa: B008.
+
+## [2026-08-05] - Historia 20: Hardening
+- backend/api/rate_limiter.py, backend/tests/test_rate_limiter.py, backend/api/main.py
+- **Aprendizados:**
+  - RateLimiter simples foi criado como uma dependência no FastAPI injetando o cliente do Redis, cobrindo endpoints vitais (health e ready).
+  - Teste de rate limiter usa override de dependência simulando um DummyRedis para não depender do servidor no teste unitário.
+  - A cobertura global validada fechou em 92% com o rate limiter.

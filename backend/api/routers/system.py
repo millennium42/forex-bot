@@ -33,7 +33,8 @@ def get_kill_switch_status(db: Session = Depends(get_db)) -> KillSwitchStatus:  
 
 @router.post("/kill-switch/trigger", response_model=KillSwitchStatus)
 def trigger_kill_switch_endpoint(
-    payload: ActionPayload, db: Session = Depends(get_db)  # noqa: B008
+    payload: ActionPayload,
+    db: Session = Depends(get_db),  # noqa: B008
 ) -> KillSwitchStatus:
     """Ativa o kill switch manualmente."""
     trigger_kill_switch(db, reason=payload.reason, actor=payload.actor)
@@ -42,7 +43,8 @@ def trigger_kill_switch_endpoint(
 
 @router.post("/kill-switch/reset", response_model=KillSwitchStatus)
 def reset_kill_switch_endpoint(
-    payload: ActionPayload, db: Session = Depends(get_db)  # noqa: B008
+    payload: ActionPayload,
+    db: Session = Depends(get_db),  # noqa: B008
 ) -> KillSwitchStatus:
     """Desativa o kill switch (exige um ator)."""
     reset_kill_switch(db, actor=payload.actor)
