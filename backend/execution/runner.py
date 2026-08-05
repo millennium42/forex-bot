@@ -448,9 +448,9 @@ class BotRunner:
     def _get_or_create_instrument(session: Session, symbol: str, client: MT5Client) -> Instrument:
         """Busca ou cria o instrumento, sincronizando os limites de volume com o broker.
 
-        Lote mínimo, passo e lote máximo são lidos do broker a cada chamada,
-        não só na criação: é o broker quem decide esses valores, e eles podem
-        mudar sem que o registro local seja recriado.
+        Lote mínimo, passo, lote máximo e tamanho do contrato são lidos do
+        broker a cada chamada, não só na criação: é o broker quem decide esses
+        valores, e eles podem mudar sem que o registro local seja recriado.
         """
         info = client.get_symbol_info(symbol)
 
@@ -462,11 +462,13 @@ class BotRunner:
                 instrument.min_volume != info.volume_min
                 or instrument.volume_step != info.volume_step
                 or instrument.volume_max != info.volume_max
+                or instrument.contract_size != info.contract_size
             )
             if mudou:
                 instrument.min_volume = info.volume_min
                 instrument.volume_step = info.volume_step
                 instrument.volume_max = info.volume_max
+                instrument.contract_size = info.contract_size
                 session.commit()
             return instrument
 
@@ -475,6 +477,7 @@ class BotRunner:
             min_volume=info.volume_min,
             volume_step=info.volume_step,
             volume_max=info.volume_max,
+            contract_size=info.contract_size,
         )
         session.add(instrument)
         session.commit()

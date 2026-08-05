@@ -370,7 +370,7 @@
         "migration aditiva para volume_step",
         "teste: instrumento existente com contract_size desatualizado e corrigido no ciclo"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }

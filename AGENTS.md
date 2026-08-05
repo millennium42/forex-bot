@@ -38,6 +38,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 28 — P0: exposição em unidade coerente | ✅ |
 | 29 — Perda flutuante conta e drawdown acumulado bloqueia | ✅ |
 | 30 — Volume proporcional ao equity | ✅ |
+| 31 — contract_size sincronizado com o broker | ✅ |
 
 ---
 
@@ -215,6 +216,13 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `session.add()`/commit e usa o objeto na hora (ex.: passando pra uma função pura como
   `_calcular_volume`) recebe `instrument.volume_step is None`, não o default do model — precisa
   passar todos os campos usados explicitamente no construtor.
+- **Sincronizar metadado de broker é "todos os campos ou nenhum", não campo a campo.** A história
+  23 sincronizava `min_volume`; a 30 acrescentou `volume_step`/`volume_max` mas esqueceu
+  `contract_size`, que ficava preso no default 100_000 (correto para EURUSD, uma ordem de
+  grandeza errado para XAUUSD, que usa 100). A 31 corrigiu incluindo `contract_size` na mesma
+  comparação `mudou = (...)` do `_get_or_create_instrument`. Ao adicionar um novo campo de
+  `SymbolInfo` no futuro, incluí-lo ali é parte do trabalho, não um follow-up — o padrão já existe,
+  só falta lembrar de estendê-lo.
 
 ---
 

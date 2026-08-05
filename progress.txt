@@ -41,6 +41,10 @@
 - Arredondamento de volume/lote para baixo no passo do broker: `math.floor(bruto/step + 1e-9) *
   step`. O epsilon absorve erro de ponto flutuante da divisao (6.999999999997 tem que virar 7, nao
   6) sem arredondar para cima de verdade nunca.
+- Sincronizar metadado de broker (min_volume, volume_step, volume_max, contract_size) e "todos os
+  campos ou nenhum" no mesmo ponto (`_get_or_create_instrument`). Adicionar um campo novo a
+  SymbolInfo sem incluir na comparacao/atualizacao ali deixa o registro local desatualizado em
+  silencio - so aparece quando o valor errado entra numa conta de risco (historia 31).
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -631,4 +635,26 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     valor monetário de perda é uma mudança de postura mais ampla que só trocar um número: os
     testes que existiam só para o contador (`_trades_de_hoje`) tiveram que ser removidos junto,
     não adaptados — não fazia mais sentido nenhuma cobertura para uma função que deixou de existir.
+---
+
+## [2026-08-05] — História 31: contract_size sincronizado com o broker
+- `_get_or_create_instrument` sincronizava `min_volume`, `volume_step` e `volume_max` do broker a
+  cada ciclo, mas nunca `contract_size` — ficava preso no default 100_000 (certo para EURUSD,
+  errado por ordem de grandeza para XAUUSD, que usa 100). Como o risco por trade multiplica por
+  esse valor (`_calcular_volume`), o volume calculado para XAUUSD saía 1000x maior que o correto.
+- `contract_size` entrou na comparação `mudou = (...)` e na atribuição de sincronização, no mesmo
+  ponto que os outros três campos. Nenhuma migration nova: a coluna `contract_size` já existe desde
+  a história 2, só a leitura do broker no runner estava incompleta.
+- Arquivos alterados: `backend/execution/runner.py` (`_get_or_create_instrument`),
+  `backend/tests/test_runner.py` (`FakeTerminal` ganhou `contract_size` como parâmetro,
+  `symbol_info()` devolve `trade_contract_size`; teste novo
+  `test_get_or_create_instrument_atualiza_contract_size_quando_broker_muda`).
+- **Aprendizados para as próximas iterações:**
+  - Ver o padrão novo no topo do arquivo: sincronizar metadado de broker é "todos os campos ou
+    nenhum" — ao adicionar um campo a `SymbolInfo`, incluí-lo na comparação/atualização do
+    `_get_or_create_instrument` é parte do trabalho, não um follow-up.
+  - `backend/collection/mt5_client.py::get_symbol_info` já lia `contract_size` corretamente (com
+    fallback `getattr(raw, "trade_contract_size", 0) or 100_000.0`); o bug estava só no consumidor
+    (`runner.py`), não na leitura do broker — vale conferir os dois lados ao investigar um campo de
+    `SymbolInfo` que parece não estar chegando onde devia.
 ---

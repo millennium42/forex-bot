@@ -67,6 +67,7 @@ class FakeTerminal:
         equity: float = 100_000.0,
         candle_rows: list[dict[str, float]] | None = None,
         volume_min: float = 0.01,
+        contract_size: float = 100_000.0,
     ) -> None:
         self.positions = positions
         self._tick = tick or SimpleNamespace(time=1_700_000_000, bid=1.0850, ask=1.0852)
@@ -74,6 +75,7 @@ class FakeTerminal:
         self.equity = equity
         self.candle_rows = candle_rows
         self.volume_min = volume_min
+        self.contract_size = contract_size
         self.last_order: dict[str, Any] | None = None
 
     def initialize(self, *_args: Any, **_kwargs: Any) -> bool:
@@ -105,7 +107,7 @@ class FakeTerminal:
         return self._tick
 
     def symbol_info(self, _symbol: str) -> Any:
-        return SimpleNamespace(volume_min=self.volume_min)
+        return SimpleNamespace(volume_min=self.volume_min, trade_contract_size=self.contract_size)
 
     def symbol_select(self, _symbol: str, _enable: bool) -> bool:
         return True
@@ -635,6 +637,22 @@ def test_get_or_create_instrument_atualiza_volume_minimo_quando_broker_muda(
     instrumento = BotRunner._get_or_create_instrument(session, "EURUSD", client_novo)
 
     assert instrumento.min_volume == pytest.approx(0.5)
+    assert len(session.execute(select(Instrument)).scalars().all()) == 1
+
+
+def test_get_or_create_instrument_atualiza_contract_size_quando_broker_muda(
+    session: Session,
+) -> None:
+    """História 31: contract_size desatualizado (ex: XAUUSD com o default 100_000
+    de EURUSD) é corrigido no mesmo ciclo que sincroniza volume_min, sem esperar
+    o instrumento ser recriado."""
+    client_antigo = _client(FakeTerminal(contract_size=100_000.0))
+    BotRunner._get_or_create_instrument(session, "XAUUSD", client_antigo)
+
+    client_novo = _client(FakeTerminal(contract_size=100.0))
+    instrumento = BotRunner._get_or_create_instrument(session, "XAUUSD", client_novo)
+
+    assert instrumento.contract_size == pytest.approx(100.0)
     assert len(session.execute(select(Instrument)).scalars().all()) == 1
 
 
