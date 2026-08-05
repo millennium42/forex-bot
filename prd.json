@@ -107,7 +107,7 @@
         "kill switch diario ativa em 5%",
         "um teste por regra"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 10,

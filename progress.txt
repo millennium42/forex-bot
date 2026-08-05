@@ -163,3 +163,10 @@
   - Score direcional é preservado independentemente da confiança. A decisão categórica (BUY, SELL, HOLD) obedece a um threshold de convicção.
   - FusedSignal grava o `weight_version` para a mesma decisão poder ser reproduzida ou testada contra novos pesos no otimizador (história 13).
   - O type hint do mypy pra `indicators=None` não exigiu `# type: ignore` no strict mode.
+
+## [2026-08-05] - Historia 9: Risk manager
+- backend/execution/risk_manager.py (RiskManager, OrderRequest, KillSwitchError, RiskValidationError) e backend/tests/test_risk_manager.py
+- **Aprendizados:**
+  - O risk manager atua como uma função pura que recebe o estado da conta (equity, daily_loss, etc) e a proposta de trade. Isso o mantém desacoplado da busca de dados e extremamente testável (100% coverage sem mocks).
+  - FTMO possui regras específicas de perda diária e max drawdown que são avaliadas a cada ordem proposta.
+  - A invariante de "único caminho para a ordem" é preparada ao focar o risk_manager apenas na validação: o `order_manager` futuro dependerá dessa aprovação para agir.
