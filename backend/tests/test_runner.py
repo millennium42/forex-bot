@@ -25,6 +25,10 @@ from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.config import Settings
 from backend.execution import runner as runner_module
+from backend.execution.drawdown_guard import (
+    is_drawdown_block_active,
+    reset_drawdown_block,
+)
 from backend.execution.kill_switch import trigger_kill_switch
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import RiskManager
@@ -159,8 +163,8 @@ def _client(terminal: FakeTerminal | None = None) -> MT5Client:
     return client
 
 
-def _runner(symbols: list[str] | None = None) -> BotRunner:
-    return BotRunner(symbols or ["EURUSD"], settings=_settings())
+def _runner(symbols: list[str] | None = None, **settings_overrides: object) -> BotRunner:
+    return BotRunner(symbols or ["EURUSD"], settings=_settings(**settings_overrides))
 
 
 # -- kill switch impede o ciclo inteiro (AC1) -------------------------------
@@ -178,6 +182,93 @@ def test_run_cycle_kill_switch_ativo_impede_o_ciclo_inteiro(
     runner.run_cycle(_client(), session)
 
     assert processed == []
+
+
+# -- _drawdown_pct: unitário -------------------------------------------------
+
+
+def test_drawdown_pct_pico_nao_positivo_nao_quebra() -> None:
+    assert BotRunner._drawdown_pct(0.0, -10.0) == 0.0
+    assert BotRunner._drawdown_pct(-5.0, -10.0) == 0.0
+
+
+def test_drawdown_pct_novo_pico_nao_e_negativo() -> None:
+    assert BotRunner._drawdown_pct(100.0, 110.0) == 0.0
+
+
+# -- história 29: drawdown acumulado do pico bloqueia o ciclo ----------------
+
+
+def test_run_cycle_drawdown_conta_a_partir_do_pico_nao_do_inicio(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lucro de 10% seguido de queda de 10% é drawdown do PICO, não do início.
+
+    Partindo de 100k: sobe para 110k (novo pico) e cai para 99k. Do início
+    (100k) isso seria só 1% de queda — não bateria um limiar de 10%. Do pico
+    (110k) é exatamente 10%, e deve bloquear.
+    """
+    processed: list[str] = []
+    runner = _runner(["EURUSD"], max_drawdown_from_peak_pct=10.0)
+    monkeypatch.setattr(runner, "_process_symbol", lambda *a, **kw: processed.append(a[0]))
+    terminal = FakeTerminal(equity=100_000.0)
+    client = _client(terminal)
+
+    runner.run_cycle(client, session)
+    assert not is_drawdown_block_active(session)
+
+    terminal.equity = 110_000.0
+    runner.run_cycle(client, session)
+    assert not is_drawdown_block_active(session)
+
+    terminal.equity = 99_000.0
+    runner.run_cycle(client, session)
+
+    assert is_drawdown_block_active(session)
+    assert processed == ["EURUSD", "EURUSD"]  # o 3º ciclo não chegou a processar símbolo
+
+
+def test_run_cycle_drawdown_bloqueado_impede_ciclos_seguintes_ate_reset(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processed: list[str] = []
+    runner = _runner(["EURUSD"], max_drawdown_from_peak_pct=10.0)
+    monkeypatch.setattr(runner, "_process_symbol", lambda *a, **kw: processed.append(a[0]))
+    terminal = FakeTerminal(equity=100_000.0)
+    client = _client(terminal)
+
+    runner.run_cycle(client, session)
+    terminal.equity = 89_000.0
+    runner.run_cycle(client, session)
+    assert is_drawdown_block_active(session)
+
+    terminal.equity = 100_000.0  # equity já recuperou...
+    runner.run_cycle(client, session)
+    # ...mas o ciclo continua bloqueado sem reset manual: só o 1º ciclo (antes
+    # do drawdown) processou símbolo; o 2º foi bloqueado pelo drawdown e o 3º
+    # continua bloqueado mesmo com o equity recuperado.
+    assert processed == ["EURUSD"]
+
+    reset_drawdown_block(session, actor="admin")
+    runner.run_cycle(client, session)
+    assert processed == ["EURUSD", "EURUSD"]
+
+
+def test_run_cycle_sem_atingir_limiar_de_drawdown_nao_bloqueia(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processed: list[str] = []
+    runner = _runner(["EURUSD"], max_drawdown_from_peak_pct=10.0)
+    monkeypatch.setattr(runner, "_process_symbol", lambda *a, **kw: processed.append(a[0]))
+    terminal = FakeTerminal(equity=100_000.0)
+    client = _client(terminal)
+
+    runner.run_cycle(client, session)
+    terminal.equity = 95_000.0  # 5% abaixo do pico: não bate os 10%
+    runner.run_cycle(client, session)
+
+    assert not is_drawdown_block_active(session)
+    assert processed == ["EURUSD", "EURUSD"]
 
 
 # -- ATR inválido não gera ordem (AC2) ---------------------------------------
@@ -312,7 +403,53 @@ def test_perda_do_dia_soma_apenas_outcomes_negativos_de_hoje(session: Session) -
     _outcome_de(session, pnl=30.0, created_at=agora)  # positivo: não conta
     _outcome_de(session, pnl=-20.0, created_at=ontem)  # de ontem: não conta
 
-    assert BotRunner._perda_do_dia(session) == pytest.approx(50.0)
+    assert BotRunner._perda_do_dia(session, _client()) == pytest.approx(50.0)
+
+
+# -- história 29: perda do dia inclui o P&L flutuante das posições abertas ---
+
+
+def test_perda_do_dia_inclui_pnl_flutuante_das_posicoes_abertas(session: Session) -> None:
+    agora = datetime.now(UTC)
+    _outcome_de(session, pnl=-50.0, created_at=agora)  # realizado
+
+    posicoes = (
+        SimpleNamespace(
+            ticket=1,
+            identifier=1,
+            symbol="EURUSD",
+            volume=0.1,
+            type=0,
+            sl=0.0,
+            tp=0.0,
+            price_open=1.1,
+            profit=-300.0,
+        ),
+        SimpleNamespace(
+            ticket=2,
+            identifier=2,
+            symbol="GBPUSD",
+            volume=0.1,
+            type=1,
+            sl=0.0,
+            tp=0.0,
+            price_open=1.3,
+            profit=50.0,  # lucro flutuante não abate a perda
+        ),
+    )
+    client = _client(FakeTerminal(positions=posicoes))
+
+    # Flutuante é o P&L líquido das posições (-300 + 50 = -250): o lucro de
+    # uma posição reduz o risco líquido em aberto, mas o resultado do dia só
+    # piora quando esse líquido é negativo — 50 (realizado) + 250 (flutuante
+    # líquido negativo), nunca os 300 da perna perdedora isolada.
+    assert BotRunner._perda_do_dia(session, client) == pytest.approx(50.0 + 250.0)
+
+
+def test_perda_do_dia_sem_posicoes_abertas_e_so_o_realizado(session: Session) -> None:
+    _outcome_de(session, pnl=-40.0, created_at=datetime.now(UTC))
+
+    assert BotRunner._perda_do_dia(session, _client()) == pytest.approx(40.0)
 
 
 # -- exposição enxerga posição aberta fora do bot (AC6) -----------------------

@@ -37,6 +37,11 @@ from backend.collection.documents import recent_documents
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.config import Settings, get_settings
 from backend.db import session_scope
+from backend.execution.drawdown_guard import (
+    is_drawdown_block_active,
+    record_equity,
+    trigger_drawdown_block,
+)
 from backend.execution.kill_switch import is_kill_switch_active
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
@@ -99,6 +104,28 @@ class BotRunner:
         """Um ciclo completo sobre todos os símbolos."""
         if is_kill_switch_active(session):
             logger.warning("runner.kill_switch_ativo", acao="ciclo ignorado")
+            return
+
+        if is_drawdown_block_active(session):
+            logger.warning("runner.drawdown_bloqueado", acao="ciclo ignorado")
+            return
+
+        equity = client.get_account_info().equity
+        peak_equity = record_equity(session, equity)
+        drawdown_pct = self._drawdown_pct(peak_equity, equity)
+        if drawdown_pct >= self.settings.max_drawdown_from_peak_pct:
+            reason = (
+                f"Drawdown de {drawdown_pct:.2f}% a partir do pico de equity "
+                f"{peak_equity} (equity atual {equity})"
+            )
+            trigger_drawdown_block(session, reason=reason)
+            logger.warning(
+                "runner.drawdown_bloqueado",
+                acao="ciclo ignorado",
+                drawdown_pct=round(drawdown_pct, 2),
+                pico=peak_equity,
+                equity=equity,
+            )
             return
 
         risk_manager = RiskManager(self.settings)
@@ -308,7 +335,7 @@ class BotRunner:
             client_request_id=self._client_request_id(symbol, side),
             instrument_id=instrument.id,
             equity=account.equity,
-            daily_loss=self._perda_do_dia(session),
+            daily_loss=self._perda_do_dia(session, client),
             current_exposure_monetary=self._exposicao_aberta_monetaria(client),
             trade_monetary_risk=risco_monetario,
             signal_id=signal_id,
@@ -316,19 +343,39 @@ class BotRunner:
 
     # -- estado real, nunca presumido ---------------------------------------
     @staticmethod
-    def _perda_do_dia(session: Session) -> float:
-        """Perda realizada hoje, em valor absoluto positivo.
+    def _drawdown_pct(peak_equity: float, equity: float) -> float:
+        """Percentual de queda do equity atual em relação ao pico já observado.
 
-        Lida do banco e não de um contador em memória: o processo reinicia, o
-        prejuízo do dia não.
+        Nunca negativo: um novo pico (equity >= peak) não é "drawdown negativo".
+        """
+        if peak_equity <= 0:
+            return 0.0
+        return max(0.0, (peak_equity - equity) / peak_equity * 100.0)
+
+    @staticmethod
+    def _perda_do_dia(session: Session, client: MT5Client) -> float:
+        """Perda do dia, em valor absoluto positivo: realizada + flutuante.
+
+        A parte realizada é lida do banco e não de um contador em memória: o
+        processo reinicia, o prejuízo do dia não. A parte flutuante é o P&L
+        líquido das posições abertas no broker (soma de todas, lucro e perda
+        juntos) — sem ela, posições perdendo ficam invisíveis para o limite
+        diário até fechar, exatamente quando já não protegem mais nada
+        (história 29). Só o líquido *negativo* piora o resultado do dia: um
+        líquido positivo não abate perda já realizada, mas também não soma —
+        lucro flutuante ainda pode reverter antes de fechar.
         """
         inicio = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        total = session.execute(
+        realizado = session.execute(
             select(func.coalesce(func.sum(Outcome.pnl), 0.0)).where(
                 Outcome.created_at >= inicio, Outcome.pnl < 0
             )
         ).scalar_one()
-        return abs(float(total))
+
+        flutuante = sum(p.profit for p in client.get_positions())
+        perda_flutuante = max(0.0, -flutuante)
+
+        return abs(float(realizado)) + perda_flutuante
 
     def _exposicao_aberta_monetaria(self, client: MT5Client) -> float:
         """Exposição das posições abertas, em valor monetário (moeda da conta).

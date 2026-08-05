@@ -344,7 +344,7 @@
         "bloqueio por drawdown grava audit_log e exige reset manual, como o kill switch",
         "teste: lucro de 10% seguido de queda de 10% conta como drawdown do pico, nao do inicio"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 30,

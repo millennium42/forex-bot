@@ -74,6 +74,12 @@ class Settings(BaseSettings):
     ftmo_max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)
     ftmo_max_drawdown_pct: float = Field(default=10.0, gt=0, le=100)
 
+    # Drawdown acumulado medido a partir do maior equity já observado (não do
+    # saldo inicial): lucro seguido de queda conta a partir do pico, que é o
+    # cenário que de fato erode a conta. Independente do limite diário — os
+    # dois são avaliados e qualquer um bloqueia (história 29).
+    max_drawdown_from_peak_pct: float = Field(default=10.0, gt=0, le=100)
+
     # --- Gates de promoção (§5) --------------------------------------------
     promotion_min_trades: int = Field(default=200, gt=0)
     promotion_min_win_rate: float = Field(default=0.55, gt=0, le=1)

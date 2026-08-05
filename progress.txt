@@ -25,6 +25,15 @@
   deixa a unidade explicita (current_exposure_monetary, trade_monetary_risk), nunca so
   current_exposure. Bug real: comparar percentual (~1-5) com teto monetario (~milhares) fazia o
   teto nunca disparar (historia 28).
+- Estado monotonico (ex: pico de equity) nao precisa de tabela dedicada: reaproveitar o audit_log
+  gravando um evento a cada novo maximo: o evento mais recente ja e o valor vigente (ORDER BY id
+  DESC LIMIT 1). Bloqueio com reset manual segue sempre o mesmo par de eventos trigger/reset do
+  kill switch (historia 18) - ver backend/execution/drawdown_guard.py (historia 29).
+- Adicionar valor a um enum nativo do Postgres exige migration propria (ALTER TYPE ... ADD VALUE
+  IF NOT EXISTS), nunca editar a migration que criou o tipo. SQLite (testes de unidade) deriva o
+  CHECK do enum Python atual, entao um valor novo passa despercebido lá mesmo sem migration - so
+  o Postgres real expõe a ausencia. ADD VALUE funciona dentro da transacao padrao do Alembic
+  (Postgres 12+), desde que o valor novo nao seja usado na mesma transacao que o adiciona.
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -526,4 +535,64 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     esperado com a MESMA fórmula do código sob teste não pega regressão de unidade — vale a pena,
     quando possível, ter pelo menos um teste com valor esperado calculado à mão (como o novo teste
     de "exposição real acima do teto", com números fixos escolhidos para reproduzir o cenário real).
+---
+
+## [2026-08-05] — História 29: Perda flutuante conta e drawdown acumulado bloqueia
+- `BotRunner._perda_do_dia(session, client)` passou a somar a perda realizada (query em `Outcome`,
+  inalterada) com a perda flutuante: o P&L **líquido** das posições abertas no broker
+  (`sum(p.profit for p in client.get_positions())`), só contando quando esse líquido é negativo
+  (`max(0.0, -flutuante)`). Um líquido positivo não abate a perda realizada, mas também não soma —
+  lucro flutuante ainda pode reverter antes de fechar.
+- Novo módulo `backend/execution/drawdown_guard.py`: `record_equity`/`get_peak_equity` persistem o
+  maior equity já observado como evento `EQUITY_PEAK_UPDATED` no `audit_log` (sem tabela nova);
+  `is_drawdown_block_active`/`trigger_drawdown_block`/`reset_drawdown_block` replicam o par
+  trigger/reset do kill switch (história 18) para o novo limite `MAX_DRAWDOWN_FROM_PEAK_PCT`
+  (`backend/config.py`, default 10.0%, mesmo valor conservador já usado em `ftmo_max_drawdown_pct`).
+- `BotRunner.run_cycle` ganhou uma segunda trava logo após o kill switch: se
+  `is_drawdown_block_active`, o ciclo inteiro é ignorado (nenhum símbolo processa, nenhuma ordem
+  possível). Senão, grava/atualiza o pico via `record_equity` e calcula
+  `_drawdown_pct(pico, equity_atual)`; ao atingir o limiar, dispara `trigger_drawdown_block` (audit
+  log + estado persistido) e encerra o ciclo sem processar símbolo. Os dois limites (perda diária
+  no `risk_manager` e drawdown do pico no `run_cycle`) são avaliados de forma independente — qualquer
+  um dos dois bloqueia.
+- Endpoints novos em `backend/api/routers/system.py`, espelhando os do kill switch: `GET
+  /system/drawdown-block` (status) e `POST /system/drawdown-block/reset` (exige `actor`). Sem
+  endpoint de trigger manual — diferente do kill switch, este só dispara automaticamente a partir
+  do drawdown medido.
+- `AuditEventType` ganhou três valores (`EQUITY_PEAK_UPDATED`, `DRAWDOWN_LIMIT_TRIGGERED`,
+  `DRAWDOWN_LIMIT_RESET`) e uma migration nova (`7a2f9c1d4e6b_add_drawdown_audit_events.py`) com
+  `ALTER TYPE audit_event_type ADD VALUE IF NOT EXISTS` para cada um — aplicada e validada contra o
+  Postgres real de dev (`alembic upgrade head` + smoke test manual dos três eventos).
+- `Position` (mt5_client.py) ganhou o campo `profit: float = 0.0` (default só para dublês de teste
+  que não simulam o campo; o MT5 real sempre o preenche), e `get_positions()` passou a ler
+  `getattr(p, "profit", 0.0)` do objeto bruto do terminal.
+- Arquivos alterados: `backend/config.py` (`max_drawdown_from_peak_pct`), `backend/models/enums.py`
+  (3 valores novos), `backend/migrations/versions/7a2f9c1d4e6b_add_drawdown_audit_events.py` (novo),
+  `backend/collection/mt5_client.py` (`Position.profit`, `get_positions`), `backend/execution/
+  drawdown_guard.py` (novo), `backend/execution/runner.py` (`run_cycle`, `_perda_do_dia`,
+  `_drawdown_pct` novo), `backend/api/routers/system.py` (endpoints novos), testes em
+  `backend/tests/test_drawdown_guard.py` (novo) e `backend/tests/test_runner.py`.
+- **Aprendizados para as próximas iterações:**
+  - Ver os dois padrões novos no topo do arquivo (estado monotônico via audit_log sem tabela
+    dedicada; migration própria para adicionar valor a enum nativo do Postgres).
+  - **Cuidado ao fazer smoke test manual (`uv run python -c "..."`) contra o Postgres de dev: o
+    banco é real e persistente, não descartável como o SQLite dos testes.** Um smoke test do
+    `drawdown_guard` gravou um pico de equity fictício (12345.0) no `audit_log` de dev — como
+    `audit_log` é append-only (trigger no banco bloqueia UPDATE/DELETE), não dá para simplesmente
+    apagar o engano. A correção foi ler o equity real da conta demo via `MT5Client` e gravar um
+    novo evento `EQUITY_PEAK_UPDATED` com o valor real por cima, restaurando o pico correto. Ao
+    testar manualmente contra um banco real (não-descartável), usar uma sessão descartável (ex:
+    SQLite/transação com rollback) sempre que possível, ou já ter em mãos o dado real para corrigir
+    por cima se o valor for irreversível.
+  - Conta demo real nesta iteração: MetaQuotes-Demo, login 110638612, equity 100.000,72 USD — bem
+    diferente do ~19 USD registrado em iterações anteriores; a conta demo parece ter sido resetada
+    entre sessões. Não assumir o valor de equity registrado em progress.txt como atual sem
+    reconferir.
+  - Netting de P&L flutuante: `sum(p.profit for p in positions)` soma lucro e perda de posições
+    diferentes antes de decidir se o resultado líquido piora o dia. Uma posição lucrando US$50 e
+    outra perdendo US$300 resulta em US$250 de perda flutuante, não US$300 — é o líquido da conta
+    que importa para o limite de risco, não a pior perna isolada.
+  - `sum()` de um gerador vazio devolve `int` 0, não `float` 0.0 — inofensivo aqui porque `max(0.0,
+    -flutuante)` força o resultado de volta a `float`, mas vale lembrar ao somar campos float de
+    listas que podem estar vazias.
 ---

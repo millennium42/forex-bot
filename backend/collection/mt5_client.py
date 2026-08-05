@@ -148,6 +148,9 @@ class Position:
     sl: float
     tp: float
     price_open: float
+    # P&L flutuante da posição, direto do broker. Default 0.0 só para dublês de
+    # teste que não simulam esse campo — o MT5 real sempre o preenche.
+    profit: float = 0.0
 
 
 def _load_terminal() -> MT5Terminal:
@@ -364,6 +367,7 @@ class MT5Client:
                 sl=float(p.sl),
                 tp=float(p.tp),
                 price_open=float(p.price_open),
+                profit=float(getattr(p, "profit", 0.0)),
             )
             for p in raw_positions
         ]

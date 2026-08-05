@@ -36,6 +36,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 26 — Timeframe configurável, default M5 | ✅ |
 | 27 — Filtro de confiança mínima calibrado | ✅ |
 | 28 — P0: exposição em unidade coerente | ✅ |
+| 29 — Perda flutuante conta e drawdown acumulado bloqueia | ✅ |
 
 ---
 
@@ -179,6 +180,13 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   (história 23) exigiu atualizar os `FakeTerminal` de `test_mt5_client.py`, `test_runner.py` e
   `test_order_manager.py` — `test_position_tracker.py` ficou de fora porque seu dublê já usa
   `# type: ignore` e não invoca esse caminho.
+- **Estado monotônico persistido sem tabela dedicada: reaproveitar o `audit_log`.** O pico de
+  equity (história 29) não precisa de coluna nem tabela própria — cada novo máximo grava um evento
+  `EQUITY_PEAK_UPDATED` com o valor no `payload`, e como o pico só cresce, o evento mais recente
+  já é o pico (`ORDER BY id DESC LIMIT 1`). O bloqueio por drawdown segue exatamente o padrão do
+  kill switch (história 18): dois tipos de evento (triggered/reset), o mais recente decide o
+  estado, reset só por ação manual. Ver `backend/execution/drawdown_guard.py` como referência para
+  a próxima trava que precisar do mesmo formato.
 - **Nenhum percentual cruza a fronteira do `risk_manager`.** Toda quantidade que entra em
   `validate_order` (exposição, risco por trade, perdas) é valor monetário na moeda da conta. O
   `risk_manager` já converte os tetos configurados em `%` (`max_total_exposure_pct` etc.) para
@@ -186,6 +194,12 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   novo nem passar o percentual bruto. Nome do parâmetro deixa a unidade explícita
   (`current_exposure_monetary`, `trade_monetary_risk`), nunca só `current_exposure`. Bug real da
   história 28: comparar percentual (~1-5) com teto monetário (~milhares) fazia o teto nunca disparar.
+- **Adicionar valor a um enum nativo do Postgres exige migration própria (`ALTER TYPE ... ADD
+  VALUE IF NOT EXISTS`), nunca editar a migration que criou o tipo.** O SQLite dos testes de
+  unidade deriva o CHECK do enum Python atual, então um valor novo em `AuditEventType` passa
+  despercebido lá mesmo sem migration — só o Postgres real expõe a ausência. `ADD VALUE` funciona
+  dentro da transação padrão do Alembic (Postgres 12+), desde que o valor novo não seja usado na
+  mesma transação que o adiciona. Ver `7a2f9c1d4e6b_add_drawdown_audit_events.py`.
 
 ---
 
