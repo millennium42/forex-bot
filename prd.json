@@ -188,7 +188,7 @@
         "tsc --noEmit limpo",
         "eslint limpo"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 18,

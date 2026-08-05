@@ -1,4 +1,5 @@
 """Endpoint para consulta de trades."""
+
 from __future__ import annotations
 
 from typing import Any

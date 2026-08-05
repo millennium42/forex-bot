@@ -216,3 +216,9 @@
   - FastAPI app unificando REST (sinais e trades, stubs no momento) e WebSocket.
   - WebSocket Manager implementado para gerenciar e manter as conexões ativas (`ConnectionManager`), possibilitando enviar broadcast para os clientes conectados.
   - O uso do TestClient do FastAPI para testar WebSocket é síncrono no script do pytest (`client.websocket_connect`), mas interage bem na mesma execução. Testar o manager de WS de forma assíncrona exige instanciar o manager independentemente para disparar mensagens na lista de WebSockets ativos.
+
+## [2026-08-05] - Historia 17: Dashboard Next.js
+- frontend/ (Next.js 15 app router)
+- **Aprendizados:**
+  - Setup do frontend Next.js usando `npx create-next-app` via PowerShell não interpreta `&&` corretamente. É preferível dividir os comandos ou usar `;`.
+  - Recharts com Next.js SSR precisa de cuidado com a renderização de componentes puramente de client side e evitar chamar setState em useEffects síncronos se possível. (lint rules atentas a cascade renders).

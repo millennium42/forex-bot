@@ -1,4 +1,5 @@
 """Endpoint de WebSocket para eventos em tempo real."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect

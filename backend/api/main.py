@@ -1,4 +1,5 @@
 """Ponto de entrada da aplicação FastAPI."""
+
 from __future__ import annotations
 
 from fastapi import FastAPI

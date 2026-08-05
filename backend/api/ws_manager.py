@@ -1,4 +1,5 @@
 """WebSocket connection manager para emissão de eventos ao vivo."""
+
 from __future__ import annotations
 
 from typing import Any
