@@ -37,13 +37,20 @@ class RiskManager:
         request: OrderRequest,
         equity: float,
         daily_loss: float,
-        current_exposure: float,
+        current_exposure_monetary: float,
         trade_monetary_risk: float,
         account_drawdown: float = 0.0,
         kill_switch_active: bool = False,
     ) -> None:
         if kill_switch_active:
             raise KillSwitchError("Kill switch persistente está ativo")
+
+        # Equity não positivo é situação degenerada: nenhum percentual calculado
+        # a partir dela é confiável (viraria 0 ou negativo), então bloqueia aqui
+        # de forma explícita em vez de confiar que os limites abaixo, avaliados
+        # sobre uma equity inválida, acabem barrando por acidente.
+        if equity <= 0:
+            raise RiskValidationError(f"Equity não positivo ({equity}) bloqueia qualquer ordem")
 
         # 1. Kill switch / Daily loss (5%)
         # Se perda diária + risco da nova ordem > max daily loss?
@@ -88,10 +95,14 @@ class RiskManager:
             )
 
         # 4. 3% de exposição
-        # Exposição total considerando a nova ordem
-        new_exposure = current_exposure + trade_monetary_risk
-        max_exposure = equity * (self.settings.max_total_exposure_pct / 100.0)
-        if new_exposure > max_exposure:
+        # Exposição total considerando a nova ordem. Tudo aqui é valor monetário
+        # na moeda da conta — nenhum percentual cruza esta fronteira. Comparar
+        # percentual com dólar foi o bug da história 28: um teto de 3%
+        # praticamente nunca disparava porque o número somado era 100x menor
+        # do que deveria.
+        new_exposure_monetary = current_exposure_monetary + trade_monetary_risk
+        max_exposure_monetary = equity * (self.settings.max_total_exposure_pct / 100.0)
+        if new_exposure_monetary > max_exposure_monetary:
             raise RiskValidationError(
-                f"Exposição de {new_exposure} excede limite de {max_exposure}"
+                f"Exposição de {new_exposure_monetary} excede limite de {max_exposure_monetary}"
             )

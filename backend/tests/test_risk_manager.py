@@ -43,7 +43,7 @@ def test_risk_manager_accepts_valid_order(
         request=valid_request,
         equity=10000.0,
         daily_loss=0.0,
-        current_exposure=100.0,
+        current_exposure_monetary=100.0,
         trade_monetary_risk=50.0,
     )
     # Não deve levantar exceção
@@ -65,7 +65,7 @@ def test_risk_manager_rejects_without_sl(
             request=req,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure=0.0,
+            current_exposure_monetary=0.0,
             trade_monetary_risk=50.0,
         )
 
@@ -79,7 +79,7 @@ def test_risk_manager_rejects_exceeding_max_risk_per_trade(
             request=valid_request,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure=0.0,
+            current_exposure_monetary=0.0,
             trade_monetary_risk=101.0,
         )
 
@@ -93,7 +93,7 @@ def test_risk_manager_rejects_exceeding_total_exposure(
             request=valid_request,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure=260.0,
+            current_exposure_monetary=260.0,
             trade_monetary_risk=50.0,
         )
 
@@ -107,7 +107,7 @@ def test_risk_manager_kill_switch_daily_loss(
             request=valid_request,
             equity=10000.0,
             daily_loss=500.0,
-            current_exposure=0.0,
+            current_exposure_monetary=0.0,
             trade_monetary_risk=50.0,
         )
 
@@ -121,7 +121,7 @@ def test_risk_manager_ftmo_max_drawdown(
             request=valid_request,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure=0.0,
+            current_exposure_monetary=0.0,
             trade_monetary_risk=50.0,
             account_drawdown=1000.0,
         )
@@ -139,7 +139,7 @@ def test_risk_manager_ftmo_daily_loss(
             request=valid_request,
             equity=10000.0,
             daily_loss=500.0,
-            current_exposure=0.0,
+            current_exposure_monetary=0.0,
             trade_monetary_risk=50.0,
         )
 
@@ -161,7 +161,7 @@ def test_risk_manager_rejects_volume_below_broker_minimum(
             request=req,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure=0.0,
+            current_exposure_monetary=0.0,
             trade_monetary_risk=50.0,
         )
 
@@ -182,7 +182,7 @@ def test_risk_manager_accepts_volume_equal_to_broker_minimum(
         request=req,
         equity=10000.0,
         daily_loss=0.0,
-        current_exposure=0.0,
+        current_exposure_monetary=0.0,
         trade_monetary_risk=50.0,
     )
     # Não deve levantar exceção
@@ -196,7 +196,82 @@ def test_risk_manager_kill_switch_active(
             request=valid_request,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure=0.0,
+            current_exposure_monetary=0.0,
             trade_monetary_risk=50.0,
             kill_switch_active=True,
+        )
+
+
+def test_risk_manager_rejects_real_exposure_above_cap_in_monetary_units(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    """Reproduz o bug da história 28: exposição real acima do teto era aceita.
+
+    Antes, `_exposicao_aberta` devolvia percentual (ex: 3.5) e esse número era
+    somado direto a um risco monetário e comparado com um teto monetário. Com
+    equity=100_000 e teto de 3% (US$ 3.000), uma exposição real de US$ 3.100
+    (posições de fato abertas na conta) tem que ser rejeitada — no código
+    antigo ela "cabia" porque UM PERCENTUAL como 3.5 nunca ultrapassa 3.000.
+    """
+    with pytest.raises(RiskValidationError, match="excede limite"):
+        risk_manager.validate_order(
+            request=valid_request,
+            equity=100_000.0,
+            daily_loss=0.0,
+            current_exposure_monetary=3_100.0,
+            trade_monetary_risk=10.0,
+        )
+
+
+def test_risk_manager_accepts_exposure_exactly_at_the_cap(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    # Equity = 10000, teto de exposição = 3% = 300. Na fronteira exata, aceita.
+    risk_manager.validate_order(
+        request=valid_request,
+        equity=10000.0,
+        daily_loss=0.0,
+        current_exposure_monetary=250.0,
+        trade_monetary_risk=50.0,
+    )
+    # Não deve levantar exceção
+
+
+def test_risk_manager_rejects_exposure_just_above_the_cap(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    # Mesmo cenário do teste anterior, um centavo acima da fronteira: rejeita.
+    with pytest.raises(RiskValidationError, match="excede limite"):
+        risk_manager.validate_order(
+            request=valid_request,
+            equity=10000.0,
+            daily_loss=0.0,
+            current_exposure_monetary=250.01,
+            trade_monetary_risk=50.0,
+        )
+
+
+def test_risk_manager_rejects_non_positive_equity(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    with pytest.raises(RiskValidationError, match="Equity não positivo"):
+        risk_manager.validate_order(
+            request=valid_request,
+            equity=0.0,
+            daily_loss=0.0,
+            current_exposure_monetary=0.0,
+            trade_monetary_risk=50.0,
+        )
+
+
+def test_risk_manager_rejects_negative_equity(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    with pytest.raises(RiskValidationError, match="Equity não positivo"):
+        risk_manager.validate_order(
+            request=valid_request,
+            equity=-500.0,
+            daily_loss=0.0,
+            current_exposure_monetary=0.0,
+            trade_monetary_risk=50.0,
         )

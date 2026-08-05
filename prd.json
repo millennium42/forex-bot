@@ -330,7 +330,7 @@
         "equity <= 0 bloqueia de fato qualquer ordem",
         "teste do caminho degenerado e do limite exato (na fronteira, aceita; acima, rejeita)"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 29,

@@ -309,7 +309,7 @@ class BotRunner:
             instrument_id=instrument.id,
             equity=account.equity,
             daily_loss=self._perda_do_dia(session),
-            current_exposure=self._exposicao_aberta(client, account.equity),
+            current_exposure_monetary=self._exposicao_aberta_monetaria(client),
             trade_monetary_risk=risco_monetario,
             signal_id=signal_id,
         )
@@ -330,21 +330,21 @@ class BotRunner:
         ).scalar_one()
         return abs(float(total))
 
-    def _exposicao_aberta(self, client: MT5Client, equity: float) -> float:
-        """Exposição das posições abertas, em percentual do equity.
+    def _exposicao_aberta_monetaria(self, client: MT5Client) -> float:
+        """Exposição das posições abertas, em valor monetário (moeda da conta).
 
         Vem do broker, não do banco: posição aberta por fora do bot ainda
-        consome risco da conta e precisa contar no limite de 3%.
+        consome risco da conta e precisa contar no limite de exposição. O
+        retorno é sempre monetário, nunca percentual — o risk manager soma
+        este valor direto a `trade_monetary_risk` (também monetário) e
+        compara com um teto monetário. Devolver percentual aqui foi o bug da
+        história 28: o teto de 3% praticamente nunca disparava porque um
+        número como "1.15" (%) era tratado como US$ 1,15.
 
         O `contract_size` é indispensável aqui. Sem ele, 0.01 lote de EURUSD
         conta como US$ 0,0115 em vez de US$ 1.154 — a exposição sai subestimada
-        em cinco ordens de grandeza e o limite de 3% nunca dispara.
+        em cinco ordens de grandeza e o limite de exposição nunca dispara.
         """
-        if equity <= 0:
-            # Equity não positivo é situação degenerada; devolver 100% faz o
-            # risk manager barrar tudo, que é o comportamento seguro.
-            return 100.0
-
         exposto = 0.0
         for p in client.get_positions():
             try:
@@ -355,7 +355,7 @@ class BotRunner:
                 contract_size = 100_000.0
             exposto += abs(p.volume * contract_size * p.price_open)
 
-        return (exposto / equity) * 100.0
+        return exposto
 
     @staticmethod
     def _tem_posicao_aberta(client: MT5Client, symbol: str) -> bool:

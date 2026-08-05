@@ -72,20 +72,20 @@ def test_exposicao_usa_contract_size() -> None:
     runner = _runner()
     client = FakeClient([_posicao()])
 
-    pct = runner._exposicao_aberta(client, equity=100_000.0)  # type: ignore[arg-type]
+    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
 
-    esperado = (0.01 * CONTRACT_SIZE * 1.1545) / 100_000.0 * 100
-    assert pct == pytest.approx(esperado)
-    assert pct == pytest.approx(1.1545, abs=1e-3)
+    esperado = 0.01 * CONTRACT_SIZE * 1.1545
+    assert exposicao == pytest.approx(esperado)
 
 
 def test_exposicao_soma_todas_as_posicoes() -> None:
     runner = _runner()
     client = FakeClient([_posicao(), _posicao("GBPUSD", preco=1.3467)])
 
-    pct = runner._exposicao_aberta(client, equity=100_000.0)  # type: ignore[arg-type]
+    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
 
-    assert pct == pytest.approx(1.1545 + 1.3467, abs=1e-3)
+    esperado = 0.01 * CONTRACT_SIZE * 1.1545 + 0.01 * CONTRACT_SIZE * 1.3467
+    assert exposicao == pytest.approx(esperado)
 
 
 def test_exposicao_assume_contrato_padrao_quando_broker_nao_responde() -> None:
@@ -93,14 +93,9 @@ def test_exposicao_assume_contrato_padrao_quando_broker_nao_responde() -> None:
     runner = _runner()
     client = FakeClient([_posicao()], symbol_info_falha=True)
 
-    pct = runner._exposicao_aberta(client, equity=100_000.0)  # type: ignore[arg-type]
+    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
 
-    assert pct == pytest.approx(1.1545, abs=1e-3)
-
-
-def test_equity_nao_positivo_barra_tudo() -> None:
-    runner = _runner()
-    assert runner._exposicao_aberta(FakeClient([]), equity=0.0) == 100.0  # type: ignore[arg-type]
+    assert exposicao == pytest.approx(0.01 * CONTRACT_SIZE * 1.1545)
 
 
 # --- uma posição por símbolo ----------------------------------------------

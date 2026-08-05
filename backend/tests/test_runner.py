@@ -342,19 +342,15 @@ def test_exposicao_aberta_inclui_posicoes_abertas_fora_do_bot() -> None:
         ),
     )
     client = _client(FakeTerminal(positions=posicoes_manuais))
-    equity = 100_000.0
 
-    exposicao = _runner()._exposicao_aberta(client, equity)
+    exposicao = _runner()._exposicao_aberta_monetaria(client)
 
     # O contract_size entra na conta: 0.5 lote não é 0,55 de exposição, é 55.000.
+    # O valor devolvido é monetário — não um percentual do equity (história 28:
+    # misturar as duas unidades era o bug que fazia o teto de 3% nunca disparar).
     contrato = 100_000.0
     exposto = abs(0.5 * contrato * 1.1000) + abs(0.2 * contrato * 1.3000)
-    assert exposicao == pytest.approx((exposto / equity) * 100.0)
-
-
-def test_exposicao_aberta_com_equity_nao_positivo_bloqueia_tudo() -> None:
-    client = _client()
-    assert _runner()._exposicao_aberta(client, 0.0) == 100.0
+    assert exposicao == pytest.approx(exposto)
 
 
 # -- falha de MT5 encerra o ciclo em vez de pular o símbolo (AC7) ------------

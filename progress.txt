@@ -19,6 +19,12 @@
 - `MT5Terminal` e um Protocol estrutural: metodo novo no Protocol exige atualizar TODO FakeTerminal
   usado como `terminal=` em teste, senao o mypy strict rejeita a injecao (exceto onde o dublê ja
   tem `# type: ignore` deliberado).
+- Nenhum percentual cruza a fronteira do risk_manager. Toda quantidade que entra em validate_order
+  (exposicao, risco por trade, perdas) e valor monetario na moeda da conta; o risk_manager converte
+  os tetos configurados em % para monetario internamente (equity * pct/100). Nome do parametro
+  deixa a unidade explicita (current_exposure_monetary, trade_monetary_risk), nunca so
+  current_exposure. Bug real: comparar percentual (~1-5) com teto monetario (~milhares) fazia o
+  teto nunca disparar (historia 28).
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -480,4 +486,44 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
   - Teste do filtro reaproveita o mesmo padrão de HOLD determinístico da história 24 (monkeypatch
     em `runner_module.fuse_signals` devolvendo um `FusedSignal` fixo) — mais simples e robusto do
     que tentar forçar uma confiança específica via fixture de candles reais.
+---
+
+## [2026-08-05] — História 28: P0 — exposição em unidade coerente
+- Bug: `runner._exposicao_aberta` devolvia PERCENTUAL do equity (ex.: 1.15 para US$ 1.154 de
+  exposição numa conta de US$ 100.000), mas `risk_manager.validate_order` somava esse número direto
+  a `trade_monetary_risk` (dólares) e comparava com `equity * max_total_exposure_pct/100` (também
+  dólares). Com equity realista o teto de 3% só dispararia com ~30.000% de exposição — na prática,
+  nunca. Agravante: o caminho degenerado `equity<=0` devolvia `100.0` pretendendo "bloquear tudo",
+  mas 100.0 é um número monetário pequeno de novo, não bloqueava nada.
+- Fix: `_exposicao_aberta` renomeado para `_exposicao_aberta_monetaria(client) -> float`, devolve
+  valor monetário puro (sem dividir por equity, sem `equity` como parâmetro). O parâmetro do
+  `risk_manager.validate_order` e do `order_manager.place_order` virou `current_exposure_monetary`
+  (nome deixa a unidade explícita). O bloqueio de `equity<=0` saiu do helper de exposição do runner
+  e virou checagem explícita e isolada no topo de `validate_order` — o risk_manager é o único
+  caminho para uma ordem (invariante do projeto), então é o lugar certo para essa trava, não um
+  efeito colateral de outro cálculo.
+- Arquivos alterados: `backend/execution/risk_manager.py` (`validate_order`: guard `equity<=0`,
+  parâmetro renomeado, comentário explícito sobre unidade monetária), `backend/execution/
+  order_manager.py` (`place_order`: parâmetro renomeado), `backend/execution/runner.py`
+  (`_exposicao_aberta_monetaria`, chamada em `_executar` atualizada), testes em
+  `backend/tests/test_risk_manager.py` (renomeação + 5 testes novos: exposição real acima do teto
+  antes escondida pelo bug de unidade, fronteira exata aceita/rejeita, equity zero e negativo
+  rejeitados), `backend/tests/test_order_manager.py` e `backend/tests/test_runner_limites.py`
+  (renomeação + valores monetários em vez de percentuais), `backend/tests/test_runner.py` (idem;
+  teste de equity não positivo na exposição do runner foi removido daqui porque a trava não vive
+  mais nesse método — o equivalente agora está em `test_risk_manager.py`).
+- **Aprendizados para as próximas iterações:**
+  - Ver padrão novo em Codebase Patterns (nenhum percentual cruza a fronteira do risk_manager).
+  - `RiskValidationError` (não `KillSwitchError`) para o guard de equity: não é um estado
+    persistente que precisa de reset manual como o kill switch, é uma condição avaliada a cada
+    chamada — a mesma ordem passaria a validar normalmente se o equity real voltasse a ser
+    positivo no próximo ciclo.
+  - Ao migrar uma função de "percentual" para "monetário", procurar TODOS os call sites que faziam
+    a conversão old→new implicitamente (aqui, a divisão por `equity*100` que sumiu do runner) e
+    também os testes que embutiam a mesma fórmula na asserção — os testes antigos de exposição
+    calculavam `(exposto/equity)*100` e comparavam com o retorno; bastava a fórmula mudar dos dois
+    lados para o teste continuar "passando" mesmo com o bug presente. Teste que deriva o valor
+    esperado com a MESMA fórmula do código sob teste não pega regressão de unidade — vale a pena,
+    quando possível, ter pelo menos um teste com valor esperado calculado à mão (como o novo teste
+    de "exposição real acima do teto", com números fixos escolhidos para reproduzir o cenário real).
 ---

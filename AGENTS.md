@@ -35,6 +35,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 25 — Sentimento entra na decisão | ✅ |
 | 26 — Timeframe configurável, default M5 | ✅ |
 | 27 — Filtro de confiança mínima calibrado | ✅ |
+| 28 — P0: exposição em unidade coerente | ✅ |
 
 ---
 
@@ -178,6 +179,13 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   (história 23) exigiu atualizar os `FakeTerminal` de `test_mt5_client.py`, `test_runner.py` e
   `test_order_manager.py` — `test_position_tracker.py` ficou de fora porque seu dublê já usa
   `# type: ignore` e não invoca esse caminho.
+- **Nenhum percentual cruza a fronteira do `risk_manager`.** Toda quantidade que entra em
+  `validate_order` (exposição, risco por trade, perdas) é valor monetário na moeda da conta. O
+  `risk_manager` já converte os tetos configurados em `%` (`max_total_exposure_pct` etc.) para
+  monetário internamente via `equity * pct/100` — quem chama nunca deve fazer essa conversão de
+  novo nem passar o percentual bruto. Nome do parâmetro deixa a unidade explícita
+  (`current_exposure_monetary`, `trade_monetary_risk`), nunca só `current_exposure`. Bug real da
+  história 28: comparar percentual (~1-5) com teto monetário (~milhares) fazia o teto nunca disparar.
 
 ---
 
