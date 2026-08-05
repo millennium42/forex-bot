@@ -42,13 +42,51 @@ def session() -> Iterator[Session]:
 
 @pytest.fixture
 def pg_url() -> str:
-    return os.environ.get(
+    """URL do banco **de teste**, nunca o de desenvolvimento.
+
+    Os testes de migration fazem `downgrade base` no teardown. Apontados para o
+    banco de dev, eles apagam o schema e o bot morre no ciclo seguinte com
+    `relation "audit_log" does not exist`. Por isso o sufixo `_test`, criado sob
+    demanda em `pg_engine`.
+    """
+    override = os.environ.get("TEST_DATABASE_URL")
+    if override:
+        return override
+    base = os.environ.get(
         "DATABASE_URL", "postgresql+psycopg://forex:forex@127.0.0.1:5432/forex_bot"
     )
+    return base if base.endswith("_test") else f"{base}_test"
+
+
+def _garantir_banco_de_teste(url: str) -> None:
+    """Cria o banco de teste se ainda não existir.
+
+    CREATE DATABASE não roda dentro de transação — daí o AUTOCOMMIT.
+    """
+    nome = url.rsplit("/", 1)[-1]
+    manutencao = create_engine(
+        url.rsplit("/", 1)[0] + "/postgres",
+        isolation_level="AUTOCOMMIT",
+        connect_args={"connect_timeout": 3},
+    )
+    try:
+        with manutencao.connect() as conn:
+            existe = conn.execute(
+                text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": nome}
+            ).scalar()
+            if not existe:
+                conn.execute(text(f'CREATE DATABASE "{nome}"'))
+    finally:
+        manutencao.dispose()
 
 
 @pytest.fixture
 def pg_engine(pg_url: str) -> Iterator[Engine]:
+    try:
+        _garantir_banco_de_teste(pg_url)
+    except Exception as exc:  # pragma: no cover - depende do ambiente
+        pytest.skip(f"Postgres indisponível: {exc}")
+
     # connect_timeout curto: sem Postgres de pé, o teste precisa pular em
     # segundos, não ficar preso no timeout default do TCP.
     engine = create_engine(pg_url, future=True, connect_args={"connect_timeout": 3})

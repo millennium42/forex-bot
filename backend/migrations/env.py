@@ -15,7 +15,12 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+# Só cai na config quando quem chamou não definiu a URL. Sobrescrever sempre
+# fazia o Alembic ignorar a URL que os testes passam e migrar o banco de
+# desenvolvimento — inclusive o `downgrade base` do teardown, que apagava o
+# schema de dev e derrubava o bot no ciclo seguinte.
+if not config.get_main_option("sqlalchemy.url", None):
+    config.set_main_option("sqlalchemy.url", get_settings().database_url)
 
 target_metadata = Base.metadata
 
