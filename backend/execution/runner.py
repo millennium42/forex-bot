@@ -154,6 +154,18 @@ class BotRunner:
         if fused.direction is Direction.HOLD:
             return
 
+        if fused.confidence < self.settings.min_signal_confidence:
+            # Direção existe, mas a convicção por trás dela não passa no piso
+            # calibrado (história 27) — sem este corte, um sinal de 7% de
+            # confiança era executado como se fosse de 70%.
+            logger.info(
+                "runner.confianca_insuficiente",
+                symbol=symbol,
+                confianca=round(fused.confidence, 3),
+                limiar=self.settings.min_signal_confidence,
+            )
+            return
+
         self._executar(
             symbol, fused, indicadores.atr, client, session, order_manager, instrument, signal.id
         )

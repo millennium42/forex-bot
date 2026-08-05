@@ -317,7 +317,7 @@
         "se houver menos de 100 sinais gravados, o script diz que a amostra e insuficiente em vez de sugerir um numero",
         "teste cobre sinal abaixo, igual e acima do limiar"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }

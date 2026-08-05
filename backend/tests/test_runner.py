@@ -514,6 +514,55 @@ def test_process_symbol_grava_signal_mesmo_em_hold(
     assert session.execute(select(Trade)).scalars().all() == []
 
 
+# -- história 27: filtro de confiança mínima ---------------------------------
+
+
+def _process_com_fused(
+    session: Session, monkeypatch: pytest.MonkeyPatch, fused: FusedSignal
+) -> None:
+    candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
+    client = _client(FakeTerminal(candle_rows=candles))
+    runner = _runner()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    monkeypatch.setattr(runner_module, "fuse_signals", lambda **_kw: fused)
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+
+def test_process_symbol_confianca_abaixo_do_limiar_nao_executa(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fraco = FusedSignal(direction=Direction.BUY, score=0.5, confidence=0.09, weight_version="v1.0")
+
+    _process_com_fused(session, monkeypatch, fraco)
+
+    signal = session.execute(select(Signal)).scalars().one()
+    assert signal.direction == Direction.BUY  # decisão é gravada mesmo rejeitada
+    assert session.execute(select(Trade)).scalars().all() == []
+
+
+def test_process_symbol_confianca_igual_ao_limiar_executa(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    no_limiar = FusedSignal(
+        direction=Direction.BUY, score=0.5, confidence=0.1, weight_version="v1.0"
+    )
+
+    _process_com_fused(session, monkeypatch, no_limiar)
+
+    assert session.execute(select(Trade)).scalars().all() != []
+
+
+def test_process_symbol_confianca_acima_do_limiar_executa(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    forte = FusedSignal(direction=Direction.BUY, score=0.5, confidence=0.8, weight_version="v1.0")
+
+    _process_com_fused(session, monkeypatch, forte)
+
+    assert session.execute(select(Trade)).scalars().all() != []
+
+
 def test_outcome_de_trade_com_signal_tem_predicted_direction(session: Session) -> None:
     candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
     client = _client(FakeTerminal(candle_rows=candles))

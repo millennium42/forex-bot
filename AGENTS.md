@@ -34,6 +34,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 24 — Runner persiste o Signal | ✅ |
 | 25 — Sentimento entra na decisão | ✅ |
 | 26 — Timeframe configurável, default M5 | ✅ |
+| 27 — Filtro de confiança mínima calibrado | ✅ |
 
 ---
 
@@ -79,6 +80,12 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `risk_manager` validar sem quebrar quem já constrói a request sem esse dado.** `None` pula a
   checagem em vez de rejeitar por um valor que ninguém informou — mesma filosofia de
   "ausência de informação não vira decisão", aplicada a validação de risco.
+- **Limiar de decisão calibrado por dado real, nunca por número escolhido no ar.** Quando uma
+  história pede "calibre X a partir da distribuição real" e a amostra ainda não existe (`n=0` ou
+  `n` pequeno), o script de calibração não deve inventar um valor — ele reporta amostra
+  insuficiente honestamente, e o default até lá cai no valor conservador mais próximo já
+  calibrado no código (aqui, o `threshold=0.1` que `fuse_signals` já usa para decidir direção),
+  documentado como provisório em `progress.txt` e no comentário do campo em `config.py`.
 - **Config que representa uma constante externa mágica (timeframe do MT5, e no futuro qualquer
   outro enum do broker) entra como nome (`str`) validado por `field_validator`, com um
   `TIMEFRAME_MAP` local traduzindo para o inteiro real — nunca importa `MetaTrader5` em

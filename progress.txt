@@ -442,3 +442,42 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
   - Constatei que a história 25 (sentimento entra na decisão) já estava com `passes: true` no
     prd.json mas nunca tinha entrado na tabela de estado do AGENTS.md — corrigido nesta iteração.
 ---
+
+## [2026-08-05] — História 27: Filtro de confiança mínima calibrado
+- `Settings.min_signal_confidence` (config.py, default 0.1) é o novo gate: em `_process_symbol`,
+  depois de descartar HOLD e antes de `_executar`, o runner rejeita e loga
+  (`runner.confianca_insuficiente`) qualquer sinal com `fused.confidence < min_signal_confidence`.
+  O `Signal` já foi gravado antes desse corte (história 24), então a rejeição também vira dado de
+  aprendizado, não só a execução.
+- `scripts/calibrar_confianca.py`: lê todo `signal.confidence` do banco via `session_scope()`,
+  reporta os percentis 50/75/90/95 e quantos sinais sobreviveriam (`confidence >= percentil`) em
+  cada um. Com menos de `AMOSTRA_MINIMA=100` sinais, recusa sugerir número e diz por quê.
+- **Calibração real rodada nesta iteração:** `uv run python scripts/calibrar_confianca.py` contra
+  o Postgres de desenvolvimento (docker compose, mesma instância citada na "Primeira execução real
+  do bot") devolveu **n=0 sinais gravados** — os 9 `Trade`/7 `Outcome` existentes na conta demo são
+  anteriores à história 24 (que introduziu a persistência de `Signal`), então não há nenhuma
+  decisão histórica com `confidence` para calibrar ainda.
+  - **Decisão de default dado n=0:** não inventar um número. `min_signal_confidence=0.1` replica o
+    único limiar já calibrado no pipeline (`fuse_signals(threshold=0.1)`, que decide BUY/SELL/HOLD
+    pelo score) — é o piso mínimo defensável, não um valor novo tirado do ar. **Ação pendente para
+    a próxima calibração:** depois que o bot rodar tempo suficiente para acumular >=100 `Signal`
+    reais, rodar `scripts/calibrar_confianca.py` de novo e revisar `MIN_SIGNAL_CONFIDENCE` a partir
+    do percentil que sobra depois de descartar os sinais de baixa convicção (ex.: manter os que
+    ficam no top 50% por confiança, ajustando conforme o win rate observado no `Outcome`).
+- Arquivos alterados: `backend/config.py` (`min_signal_confidence`), `backend/execution/runner.py`
+  (`_process_symbol`), `backend/tests/test_runner.py` (3 testes novos: confiança abaixo/igual/acima
+  do limiar), `scripts/calibrar_confianca.py` (novo).
+- **Aprendizados para as próximas iterações:**
+  - Ver padrão novo em Codebase Patterns (limiar calibrado por dado real, não por número no ar).
+  - `scripts/` não entra em `[tool.coverage.run] source = ["backend"]` nem em `mypy backend` — o
+    script de calibração não precisa (nem pode) contar para o coverage de 80% do módulo tocado, e
+    o mypy strict do CI não o verifica. Validei a lógica de percentis isoladamente com dado
+    sintético (`statistics.quantiles`, semente fixa) antes de rodar contra o banco real, já que o
+    banco real não tinha amostra suficiente para exercitar esse ramo.
+  - `statistics.quantiles(valores, n=100)` devolve 99 cortes; o percentil `p` é `cortes[p-1]` — não
+    há corte para p=100 (seria o próprio máximo), mas como os percentis pedidos (50/75/90/95) são
+    todos < 100, não precisei tratar esse caso extremo.
+  - Teste do filtro reaproveita o mesmo padrão de HOLD determinístico da história 24 (monkeypatch
+    em `runner_module.fuse_signals` devolvendo um `FusedSignal` fixo) — mais simples e robusto do
+    que tentar forçar uma confiança específica via fixture de candles reais.
+---

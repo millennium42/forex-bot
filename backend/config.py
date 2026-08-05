@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     sentiment_cache_ttl_seconds: int = 86_400
     sentiment_lookback_minutes: int = Field(default=60, gt=0)
 
+    # Confiança mínima da fusão para o runner executar a ordem (história 27).
+    # Default provisório: com 0 sinais gravados no momento desta calibração
+    # (ver `scripts/calibrar_confianca.py` e progress.txt), não há distribuição
+    # real para derivar um número — usa-se o mesmo limiar já calibrado do
+    # `fuse_signals` (threshold=0.1 para a decisão categórica), como piso
+    # mínimo defensável até existirem >=100 sinais reais para recalibrar.
+    min_signal_confidence: float = Field(default=0.1, ge=0, le=1)
+
     # --- Observabilidade ----------------------------------------------------
     sentry_dsn: str | None = None
     log_level: str = "INFO"
