@@ -12,6 +12,7 @@ from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
 from backend.models.trade import Trade
+from backend.models.weight_version import WeightVersion
 
 __all__ = [
     "AuditEventType",
@@ -26,4 +27,5 @@ __all__ = [
     "Signal",
     "Trade",
     "TradeStatus",
+    "WeightVersion",
 ]

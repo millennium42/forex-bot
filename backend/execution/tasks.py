@@ -12,5 +12,5 @@ from backend.execution.position_tracker import PositionTracker
 def track_positions_task() -> None:
     """Executa a reconciliação de posições do PositionTracker."""
     with session_scope() as session, MT5Client() as client:
-            tracker = PositionTracker(client, session)
-            tracker.reconcile()
+        tracker = PositionTracker(client, session)
+        tracker.reconcile()

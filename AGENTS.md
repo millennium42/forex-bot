@@ -134,3 +134,4 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 - **O job `frontend` do CI só nasce na história 17**, junto com o diretório. Job que não tem o que
   rodar é ruído.
 - **Ralph + Ruflo:** O Ralph Loop (`scripts/ralph/ralph.ps1`) itera pelas histórias pendentes. O agente (Claude) foi instruído a usar ferramentas e swarms do Ruflo para auxiliar nas tarefas complexas, mas o Ruflo e o Ralph não anulam as invariantes de fail-closed e rulesets exigidos no projeto. Se a instalação do Ruflo via `npx` falhar por limites de memória, recomenda-se instalar os plugins no Claude.
+- **Mypy e SQLAlchemy Models em Testes:** Em testes, afirmar ssert obj.atributo is True estreita o tipo (narrowing) para Literal[True]. Se uma funcao atualiza o banco e desativa o atributo, o mypy vai reclamar de 'unreachable code' em qualquer codigo apos ssert not obj.atributo se voce nao limpar a hipotese do compilador. Faca session.refresh(obj) antes do assert reverso.

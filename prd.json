@@ -147,7 +147,7 @@
         "nova versao nunca sobrescreve a anterior",
         "rollback para versao anterior funciona"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 14,

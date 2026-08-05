@@ -189,3 +189,11 @@
   - Outcome registra o pnl_pct isolado das variaveis da conta. Calculado como variacao percentual do preco ((exit_price - entry_price) / entry_price).
   - A direcao atual (actual_direction) do mercado e deduzida a partir do sinal do PnL: PnL > 0 confirma a direcao original apostada (BUY para Side.BUY, SELL para Side.SELL), enquanto PnL < 0 reflete direcao oposta.
   - Trade sem sinal anterior que seja lucrativo e considerado "correto". Caso de trade fechado com PnL = 0 vira HOLD.
+## [2026-08-05] - Historia 13: Weight optimizer
+- backend/learning/weight_optimizer.py (WeightOptimizer), backend/models/weight_version.py, backend/tests/test_weight_optimizer.py
+- **Aprendizados:**
+  - O versionamento dos pesos no banco (WeightVersion) eh mantido desativando os pesos anteriores (is_active=False) e ativando o novo, mantendo historico intacto para sempre podermos fazer rollback.
+  - O otimizador compara as vitorias das frentes de analise (tecnica vs sentimento) e ajusta as proporcoes com um piso de 0.1, garantindo que nunca matamos por completo uma analise.
+  - Alembic pode gerar constraints muito longas dependendo dos nomes do SQLite/Postgres. Um '# noqa: E501' resolveu problemas de lint no arquivo de migracao.
+  - mypy narrowing para atributos mapeados do banco pode dar dor de cabeca em asserts sucessivos num teste. Ler e re-validar a mesma variavel exige 'session.refresh()' para que o mypy nao reclame de 'Statement is unreachable' devida a falso estado estatico.
+

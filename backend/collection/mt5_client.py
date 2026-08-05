@@ -283,9 +283,7 @@ class MT5Client:
             # Mas na verdade as vezes retorna None quando não tem? Não, None é falha
             # Se a tuple está vazia (), isso indica 0 posições.
             code, _ = self.terminal.last_error()
-            if (
-                code != 1
-            ):  # 1 is SUCCESS in MT5? Treat None as falha
+            if code != 1:  # 1 is SUCCESS in MT5? Treat None as falha
                 raise MT5ConnectionError(f"positions_get() falhou: {self._erro()}")
             return []
 
