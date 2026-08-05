@@ -20,7 +20,10 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 10 — Order manager | ✅ |
 | 11 — Position tracker | ✅ |
 | 12 — Outcome recorder | ✅ |
-| 13–20 | ⏳ pendentes |
+| 13 — Weight optimizer | ✅ |
+| 14 — Backtester | ✅ |
+| 15 — Promotion gate | ✅ |
+| 16–20 | ⏳ pendentes |
 
 ---
 

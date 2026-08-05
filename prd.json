@@ -168,7 +168,7 @@
         "minimo de 200 trades exigido",
         "passar nos gates nao promove sozinho"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 16,
