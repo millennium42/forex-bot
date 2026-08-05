@@ -29,6 +29,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 19 — Observabilidade | ✅ |
 | 20 — Hardening | ✅ |
 | 21 — Testes do BotRunner | ✅ |
+| 22 — Dashboard rico | ✅ |
 
 ---
 
@@ -144,6 +145,9 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | Histórias e critérios | `prd.json` / `tasks/prd-forex-bot.md` |
 | Infra de estado | `docker-compose.yml` (só Postgres + Redis) |
 | CI | `.github/workflows/ci.yml` |
+| Endpoints do dashboard | `backend/api/routers/{trades,signals,audit,promotion}.py` |
+| Componentes do dashboard | `frontend/src/components/{charts,modals,tabs}/` |
+| Fetchers + tipos do frontend | `frontend/src/lib/api.ts` |
 
 ---
 
@@ -160,3 +164,10 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 - **Next.js e Recharts:** Cuidado com regras de eslint como `react-hooks/set-state-in-effect`. O uso de `useEffect` para marcar `mounted = true` pode conflitar se não anotado adequadamente ou caso haja separação clara de server/client.
 - **TestClient com SQLite In-Memory:** O SQLite in-memory cria um banco por conexão (thread). Para compartilhar a mesma instância em testes de API que usam TestClient (FastAPI spawns threads), use `create_engine` com `poolclass=StaticPool` e `connect_args={"check_same_thread": False}`.
 - **Ruff B008 e FastAPI Depends:** O `ruff` acusa `B008` ao chamar funções como `Depends(get_db)` direto na assinatura da função. Para calar o alerta de forma cirúrgica num endpoint (como o `/ready`), adicione `# noqa: B008` na linha.
+- **Modelos sem `relationship()` é deliberado.** `Trade`, `Signal`, `Outcome`, `Instrument` só têm FK (`instrument_id`, `signal_id`, `trade_id`), nunca `relationship()`. Endpoint que precisa juntar tabelas (ex: `/trades/history`) faz `db.query(Trade, Instrument.symbol, Signal, Outcome).join(...).outerjoin(...)` explícito em vez de navegar atributo. Ao adicionar endpoint novo que cruza tabelas, siga o mesmo padrão — não adicione `relationship()` só para um endpoint.
+- **React Compiler linta `useEffect` com rigor (Next 16 / React 19).** `eslint-plugin-react-hooks` acusa `react-hooks/set-state-in-effect` para qualquer `setState` (direto ou via função assíncrona) chamado dentro do corpo de um `useEffect`, e `react-hooks/purity` para `Date.now()`/`Math.random()`/`new Date()` sem argumento chamados durante o render (inclusive dentro de `useMemo`). Ambos são falsos positivos legítimos para fetch inicial de dados e filtro por janela de tempo — resolvido com `// eslint-disable-next-line <regra>` pontual, comentando o motivo. `new Date(isoString)` (com argumento) não é pego pela regra de pureza.
+- **Tailwind v4 dark mode por classe, não por media query.** `@custom-variant dark (&:where(.dark, .dark *));` no topo do `globals.css` + toggle de `.dark` no `<html>` via JS. Tokens de cor ficam em `@theme inline` apontando para variáveis simples (`--background`, `--card`, etc.), redefinidas dentro de `.dark { }` — é o padrão que o shadcn/ui usa para Tailwind v4, permite `bg-card`, `text-fg-secondary` etc. funcionarem nos dois temas sem duplicar classe em todo componente. Script inline em `layout.tsx` aplica a classe antes do primeiro paint (evita flash); `suppressHydrationWarning` no `<html>`/`<body>` é obrigatório porque esse script roda fora do ciclo do React.
+- **Paleta de gráfico dedicada, não a paleta de marca.** Azul/roxo da marca (`--color-primary`/`--color-accent`) falha o validador da skill `dataviz` como par categórico (ΔE 1.3 deutan, 12.0 visão normal — abaixo do piso de 15). Séries de gráfico usam `frontend/src/lib/palette.ts`, validado com `node scripts/validate_palette.js` da skill contra as duas superfícies (clara/escura) deste app: azul/laranja para categórico, verde/vermelho (`good`/`critical`) reservados para estado (lucro/prejuízo), nunca reaproveitados como cor de série.
+- **Sem tabela de equity histórico.** O MT5 só devolve o equity atual, não série temporal. A curva de capital do dashboard é reconstruída de trás para frente: parte do equity atual e desconta o `pnl` de cada trade encerrado andando no tempo (`buildEquityCurve` em `EquityCurveChart.tsx`). É dado real, não interpolado — mas reinicia do zero a cada full reload porque não persiste estado entre sessões do navegador.
+- **Backend + frontend rodando localmente durante dev podem colidir com processo velho.** `netstat -ano | grep :PORTA` + `Get-CimInstance Win32_Process -Filter "ProcessId=X"` (PowerShell) identifica se a porta já está ocupada por um `uvicorn`/`next dev` de uma sessão anterior rodando código desatualizado (sem `--reload` no caso do uvicorn). `next dev` faz Fast Refresh sozinho ao detectar mudança de arquivo; `uvicorn` sem `--reload` não — precisa matar e subir de novo para refletir edição.
+- **Verificação visual sem `chromium-cli` disponível:** `npx --yes -p playwright playwright install chromium` baixa o browser; o script de verificação não pode rodar com `node script.js` direto (o módulo `playwright` não resolve fora de um projeto que o declara) — descubra o cache do npx (`npm config get cache`, pasta `_npx/<hash>/node_modules`) e exporte `NODE_PATH` apontando pra lá antes de rodar `node script.js`.

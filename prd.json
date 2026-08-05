@@ -251,7 +251,7 @@
         "dark mode e light mode",
         "tsc --noEmit e eslint limpos"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 23,

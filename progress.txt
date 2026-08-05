@@ -307,3 +307,53 @@
     exceção internamente, e o retorno `HOLD` de `_process_symbol`). Suíte inteira: 292 testes,
     coverage global 91.95%.
 ---
+
+## [2026-08-05] — História 22: Dashboard rico
+- Backend: `backend/api/routers/trades.py` (`GET /trades/history` com filtros symbol/status/
+  since/until, junta Trade+Instrument+Signal+Outcome sem `relationship()`), `signals.py`
+  (`GET /signals/` real, era stub), `audit.py` (novo, `GET /audit/` com filtro por
+  `event_type`), `promotion.py` (`GET /promotion/status` agora calcula métricas reais do
+  forward test a partir de `Outcome` e devolve `criteria: [{value, target, unit, passed}]`
+  por gate). Testes novos em `backend/tests/test_dashboard_api.py` (padrão
+  dependency_overrides + StaticPool de `test_kill_switch.py`).
+- Frontend: reescrita completa de `frontend/src/app/page.tsx` como orquestrador de 5 abas
+  (Visão geral, Trades, Sinais, Gates, Auditoria), 5 gráficos (curva de capital, distribuição
+  de P&L, win rate por par, sentimento vs. técnica, heatmap por hora), 3 modais (trade, sinal,
+  kill switch) e cards de insight. Dark/light mode via `frontend/src/lib/theme.tsx` + toggle no
+  header. Estrutura nova: `lib/{api,theme,palette,format,insights}.ts`,
+  `components/{Header,Tabs,InsightCard,MetricCard}.tsx`, `components/charts/*.tsx`,
+  `components/modals/*.tsx`, `components/tabs/*.tsx`.
+- **Aprendizados para as próximas iterações:**
+  - Não existe endpoint pronto para nada disso — o HANDOFF dizia "o backend já expõe o que
+    precisa", mas `/signals/` era stub vazio, `/trades/` só listava posição aberta ao vivo no
+    MT5 (nada do banco) e `/promotion/status` sempre devolvia métricas zeradas. História de UI
+    "só front" nesse projeto quase sempre exige endpoint novo — checar o schema real do banco
+    antes de assumir que dá para montar a tela só com o que já existe.
+  - Sem tabela de equity histórico no banco: a curva de capital é reconstruída de trás pra
+    frente (equity atual menos a soma do PnL dos trades encerrados, andando no tempo). Dado
+    real, não interpolado, mas não sobrevive a um F5 se a conta mudar de equity por fora do
+    fluxo de trades rastreados.
+  - Paleta de marca (azul/roxo) falha o validador da skill `dataviz` como par categórico
+    (ΔE 1.3 deutan). Gráfico usa paleta própria em `lib/palette.ts`, validada com
+    `scripts/validate_palette.js` da skill contra as duas superfícies do app.
+  - React Compiler (Next 16/React 19) linta `useEffect` com `react-hooks/set-state-in-effect`
+    e `react-hooks/purity` (`Date.now()` durante render, mesmo dentro de `useMemo`). Fetch
+    inicial e filtro por janela de tempo são falsos positivos legítimos — resolvidos com
+    `eslint-disable-next-line` pontual, mesmo padrão que a história 17 já tinha usado pro
+    `mounted`.
+  - Tailwind v4 dark mode por classe (`@custom-variant dark`) + variável CSS redefinida dentro
+    de `.dark {}`, não media query — o toggle do usuário precisa vencer a preferência do SO.
+    Script inline no `layout.tsx` aplica a classe antes do primeiro paint (evita flash);
+    `suppressHydrationWarning` obrigatório porque esse script roda fora do React.
+  - Verificação visual: sem `chromium-cli` no ambiente, instalei Playwright sob demanda
+    (`npx --yes -p playwright playwright install chromium`) e rodei o driver com `NODE_PATH`
+    apontando pro cache do npx (`npm config get cache` → `_npx/<hash>/node_modules`), porque
+    `node script.js` direto não resolve um pacote instalado só via `npx -p`.
+  - Achei um `uvicorn` de sessão anterior preso na porta 8001 rodando código desatualizado (sem
+    `--reload`) — `netstat -ano` + `Get-CimInstance Win32_Process -Filter "ProcessId=X"` (
+    PowerShell) confirmou que era o mesmo repo antes de matar e subir de novo. `next dev` faz
+    Fast Refresh sozinho; `uvicorn` sem `--reload`, não.
+  - Conta demo real conectada durante o teste (MetaQuotes-Demo, equity ainda ~19 USD, mesma
+    situação registrada na revisão pós-Ralph anterior): confirma que os endpoints novos leem o
+    banco de verdade, não inventam número.
+---
