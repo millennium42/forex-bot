@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     # --- NLP ----------------------------------------------------------------
     sentiment_model: str = "ProsusAI/finbert"
     sentiment_cache_ttl_seconds: int = 86_400
+    sentiment_lookback_minutes: int = Field(default=60, gt=0)
 
     # --- Observabilidade ----------------------------------------------------
     sentry_dsn: str | None = None

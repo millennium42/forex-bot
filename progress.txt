@@ -419,3 +419,4 @@
     — o técnico é reversão à média (gotcha já registrado na história 21) e a direção observada não
     é garantida.
 ---Nenhuma historia concluida na iteracao 2. Parando para inspecao.
+Nenhuma historia concluida na iteracao 1. Parando para inspecao.

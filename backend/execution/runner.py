@@ -15,12 +15,17 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import func, select
 
+from backend.analysis.sentiment_analyzer import (
+    SentimentAnalyzer,
+    SentimentScore,
+    SentimentUnavailableError,
+)
 from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal, fuse_signals
 from backend.analysis.technical_analyzer import (
     IndicatorSnapshot,
@@ -28,6 +33,7 @@ from backend.analysis.technical_analyzer import (
     TechnicalScore,
     compute_indicators,
 )
+from backend.collection.documents import recent_documents
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.config import Settings, get_settings
 from backend.db import session_scope
@@ -64,11 +70,13 @@ class BotRunner:
         symbols: list[str],
         interval_seconds: int = 60,
         settings: Settings | None = None,
+        sentiment_analyzer: SentimentAnalyzer | None = None,
     ) -> None:
         self.symbols = symbols
         self.interval_seconds = interval_seconds
         self.settings = settings or get_settings()
         self.analyzer = TechnicalAnalyzer()
+        self._sentiment_analyzer = sentiment_analyzer
 
     # -- laço principal ------------------------------------------------------
     def run(self, max_cycles: int | None = None) -> None:
@@ -131,7 +139,8 @@ class BotRunner:
             return
 
         technical = self.analyzer.analyze(candles)
-        fused = fuse_signals(technical=technical, sentiment=None)
+        sentiment = self._obter_sentimento(session, symbol)
+        fused = fuse_signals(technical=technical, sentiment=sentiment)
         logger.info(
             "runner.avaliado",
             symbol=symbol,
@@ -140,7 +149,9 @@ class BotRunner:
         )
 
         instrument = self._get_or_create_instrument(session, symbol, client)
-        signal = self._registrar_signal(session, instrument, fused, technical, indicadores)
+        signal = self._registrar_signal(
+            session, instrument, fused, technical, indicadores, sentiment
+        )
 
         if fused.direction is Direction.HOLD:
             return
@@ -156,6 +167,7 @@ class BotRunner:
         fused: FusedSignal,
         technical: TechnicalScore,
         indicadores: IndicatorSnapshot,
+        sentiment: SentimentScore | None,
     ) -> Signal:
         """Grava a decisão antes de qualquer execução — inclusive quando é HOLD.
 
@@ -169,8 +181,8 @@ class BotRunner:
             direction=fused.direction,
             confidence=fused.confidence,
             fused_score=fused.score,
-            sentiment_score=None,
-            sentiment_confidence=None,
+            sentiment_score=sentiment.score if sentiment is not None else None,
+            sentiment_confidence=sentiment.confidence if sentiment is not None else None,
             technical_score=technical.score,
             weight_version=fused.weight_version,
             inputs={
@@ -186,6 +198,39 @@ class BotRunner:
         session.add(signal)
         session.commit()
         return signal
+
+    def _obter_sentimento(self, session: Session, symbol: str) -> SentimentScore | None:
+        """Sentimento do par a partir de documentos recentes, ou `None` sem eles.
+
+        A janela de recência (`sentiment_lookback_minutes`) garante que um
+        documento velho não influencie a decisão de agora. Ausência de
+        documento ou backend de NLP indisponível resultam em `None`, nunca em
+        score neutro forjado — o `fuse_signals` já sabe degradar a confiança
+        quando o sentimento é `None`.
+        """
+        desde = datetime.now(UTC) - timedelta(minutes=self.settings.sentiment_lookback_minutes)
+        documentos = recent_documents(session, symbol, desde)
+        if not documentos:
+            return None
+        try:
+            return self._get_sentiment_analyzer().analyze_documents(documentos)
+        except SentimentUnavailableError as exc:
+            # Mesma postura best-effort dos coletores: falta de backend de NLP
+            # não pode derrubar o ciclo, só empobrecer a decisão para "sem
+            # sentimento".
+            logger.warning("runner.sentimento_indisponivel", symbol=symbol, erro=str(exc))
+            return None
+
+    def _get_sentiment_analyzer(self) -> SentimentAnalyzer:
+        """Carrega o analisador sob demanda — só quando há documento para pontuar.
+
+        Mesmo padrão das outras dependências pesadas (MT5Terminal, backend de
+        NLP): a injeção via construtor existe para teste, o runtime carrega o
+        modelo de verdade na primeira vez que é preciso.
+        """
+        if self._sentiment_analyzer is None:
+            self._sentiment_analyzer = SentimentAnalyzer(settings=self.settings)
+        return self._sentiment_analyzer
 
     def _executar(
         self,

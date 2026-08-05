@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
 from backend.config import Settings, get_settings
+from backend.models import Document
 from backend.observability import measure_latency
 
 __all__ = [
@@ -35,6 +37,7 @@ __all__ = [
     "SentimentScore",
     "SentimentUnavailableError",
     "TextBlobBackend",
+    "aggregate",
     "build_cache",
     "cache_key",
     "load_backend",
@@ -107,6 +110,23 @@ def neutral(engine: str) -> SentimentScore:
     entrar no fusion como se fosse leitura de mercado.
     """
     return SentimentScore(score=0.0, confidence=0.0, engine=engine)
+
+
+def aggregate(scores: Sequence[SentimentScore], engine: str) -> SentimentScore:
+    """Combina os scores de vários documentos num único, ponderado pela confiança.
+
+    Documentos que discordam entre si puxam o score combinado para perto de
+    zero mesmo quando cada um, isoladamente, é confiante — a mesma lógica de
+    ponderação por confiança do `signal_fusion`, aplicada aqui a documentos em
+    vez de a técnica/sentimento. `scores` vazio não é tratado aqui: quem chama
+    decide se ausência de documento vira `None`.
+    """
+    total_confidence = sum(s.confidence for s in scores)
+    if total_confidence <= 0:
+        return SentimentScore(score=0.0, confidence=0.0, engine=engine)
+    score = sum(s.score * s.confidence for s in scores) / total_confidence
+    confidence = total_confidence / len(scores)
+    return SentimentScore(score=score, confidence=confidence, engine=engine)
 
 
 # --------------------------------------------------------------------------- #
@@ -285,6 +305,19 @@ class SentimentAnalyzer:
         resultado = self._backend.score(text)
         self._cache_set(chave, resultado)
         return resultado
+
+    def analyze_documents(self, documents: Sequence[Document]) -> SentimentScore | None:
+        """Score agregado de vários documentos.
+
+        `None` quando `documents` está vazio — ausência de documento não pode
+        virar score neutro forjado; quem chama (o runner) já trata `None` como
+        "sem informação de sentimento" e o fusion sabe degradar a confiança
+        a partir disso.
+        """
+        if not documents:
+            return None
+        scores = [self.analyze(f"{doc.title or ''} {doc.content}".strip()) for doc in documents]
+        return aggregate(scores, self.engine)
 
     # -- cache: toda falha é degradação, nunca exceção que sobe ------------- #
     def _cache_get(self, chave: str) -> SentimentScore | None:

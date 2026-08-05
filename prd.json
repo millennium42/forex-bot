@@ -290,7 +290,7 @@
         "confianca fundida passa a poder ultrapassar 0.7 quando as duas pontas concordam",
         "teste cobre: sem documento, documentos concordantes e documentos discordantes"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 26,
