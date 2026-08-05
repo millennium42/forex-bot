@@ -420,3 +420,25 @@
     é garantida.
 ---Nenhuma historia concluida na iteracao 2. Parando para inspecao.
 Nenhuma historia concluida na iteracao 1. Parando para inspecao.
+
+## [2026-08-05] — História 26: Timeframe configurável, default M5
+- `Settings.timeframe` (nome, default "M5") substitui a constante `TIMEFRAME_M1` hard-coded do
+  runner. `TIMEFRAME_MAP` traduz nome -> inteiro real do MT5 (M1=1, M5=5, M15=15, M30=30,
+  H1=16385, valores confirmados via `import MetaTrader5` nesta máquina Windows).
+  `field_validator` rejeita nome fora do mapa com `ValidationError` no boot — não há valor seguro
+  para degradar aqui (diferente do `trading_mode`), então falha explícita é o comportamento
+  correto. `Settings.mt5_timeframe` expõe o inteiro já traduzido.
+- Arquivos alterados: `backend/config.py` (`TIMEFRAME_MAP`, campo `timeframe`, validator,
+  property `mt5_timeframe`), `backend/execution/runner.py` (removida a constante local
+  `TIMEFRAME_M1`, `_process_symbol` usa `self.settings.mt5_timeframe`), `backend/tests/test_config.py`
+  (mapeamento nome->constante, default M5, ValidationError para nome inválido).
+- **Aprendizados para as próximas iterações:**
+  - `CANDLES_POR_CICLO` (120) não mudou: é contagem de candles, não de tempo, então continua
+    suficiente para o indicador mais longo (MACD 26+9) em qualquer timeframe do mapa.
+  - Padrão novo registrado em AGENTS.md: constante externa mágica de broker vira nome + `field_validator`
+    + mapa local, com falha explícita no boot (não degradação silenciosa) quando o valor é
+    desconhecido — o oposto da filosofia de "fail-closed para demo" do trading_mode, porque aqui
+    não existe timeframe "seguro" para cair de volta.
+  - Constatei que a história 25 (sentimento entra na decisão) já estava com `passes: true` no
+    prd.json mas nunca tinha entrado na tabela de estado do AGENTS.md — corrigido nesta iteração.
+---

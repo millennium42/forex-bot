@@ -10,13 +10,25 @@ from __future__ import annotations
 from enum import StrEnum
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class TradingMode(StrEnum):
     DEMO = "demo"
     REAL = "real"
+
+
+# Constantes reais do pacote `MetaTrader5` (win32-only). Hard-coded aqui pelo
+# mesmo motivo do `TIMEFRAME_M1` que existia em runner.py: ler um inteiro não
+# justifica importar um pacote que não instala em Linux (CI).
+TIMEFRAME_MAP: dict[str, int] = {
+    "M1": 1,
+    "M5": 5,
+    "M15": 15,
+    "M30": 30,
+    "H1": 16_385,
+}
 
 
 class Settings(BaseSettings):
@@ -45,6 +57,10 @@ class Settings(BaseSettings):
     mt5_server: str | None = None
     mt5_terminal_path: str | None = None
     mt5_timeout_ms: int = 10_000
+
+    # Timeframe dos candles analisados pelo runner. Nome, não inteiro mágico
+    # do MT5 — ver `TIMEFRAME_MAP` e `mt5_timeframe`.
+    timeframe: str = "M5"
 
     # --- Regras de risco (§4) ----------------------------------------------
     max_risk_per_trade_pct: float = Field(default=1.0, gt=0, le=100)
@@ -81,6 +97,17 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     position_tracker_interval_seconds: int = Field(default=60, gt=0)
 
+    @field_validator("timeframe")
+    @classmethod
+    def _valida_timeframe(cls, v: str) -> str:
+        """Falha no boot com mensagem clara — ao contrário do trading mode,
+        aqui não há valor seguro para degradar: um timeframe errado troca a
+        série de candles inteira sem que ninguém perceba."""
+        if v not in TIMEFRAME_MAP:
+            opcoes = ", ".join(TIMEFRAME_MAP)
+            raise ValueError(f"timeframe invalido: {v!r}. Opcoes validas: {opcoes}")
+        return v
+
     # ------------------------------------------------------------------ #
     @property
     def effective_trading_mode(self) -> TradingMode:
@@ -100,6 +127,11 @@ class Settings(BaseSettings):
     @property
     def is_real_trading(self) -> bool:
         return self.effective_trading_mode is TradingMode.REAL
+
+    @property
+    def mt5_timeframe(self) -> int:
+        """Constante MT5 correspondente ao `timeframe` configurado."""
+        return TIMEFRAME_MAP[self.timeframe]
 
     @property
     def rss_feed_list(self) -> list[str]:

@@ -51,11 +51,9 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-# Timeframe M1 do MT5. Constante local para não obrigar o import do pacote
-# win32-only só para ler um inteiro.
-TIMEFRAME_M1 = 1
-
-# Candles suficientes para o indicador mais longo (MACD 26 + sinal 9).
+# Candles suficientes para o indicador mais longo (MACD 26 + sinal 9),
+# independente do timeframe configurado (`settings.timeframe`): a contagem é
+# em número de candles, não em tempo.
 CANDLES_POR_CICLO = 120
 
 # Take profit a 2x a distância do stop: relação risco/retorno de 1:2.
@@ -130,7 +128,7 @@ class BotRunner:
         session: Session,
         order_manager: OrderManager,
     ) -> None:
-        candles = client.get_candles(symbol, TIMEFRAME_M1, CANDLES_POR_CICLO)
+        candles = client.get_candles(symbol, self.settings.mt5_timeframe, CANDLES_POR_CICLO)
         indicadores = compute_indicators(candles)
         if indicadores is None:
             # Série curta ou indicador indefinido. Não é erro — é ausência de

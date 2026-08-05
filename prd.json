@@ -303,7 +303,7 @@
         "quantidade de candles por ciclo continua suficiente para o indicador mais longo",
         "teste garante o mapeamento nome -> constante do MT5"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 27,

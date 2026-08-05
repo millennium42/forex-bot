@@ -32,6 +32,8 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 22 — Dashboard rico | ✅ |
 | 23 — Lote mínimo por símbolo | ✅ |
 | 24 — Runner persiste o Signal | ✅ |
+| 25 — Sentimento entra na decisão | ✅ |
+| 26 — Timeframe configurável, default M5 | ✅ |
 
 ---
 
@@ -77,6 +79,12 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `risk_manager` validar sem quebrar quem já constrói a request sem esse dado.** `None` pula a
   checagem em vez de rejeitar por um valor que ninguém informou — mesma filosofia de
   "ausência de informação não vira decisão", aplicada a validação de risco.
+- **Config que representa uma constante externa mágica (timeframe do MT5, e no futuro qualquer
+  outro enum do broker) entra como nome (`str`) validado por `field_validator`, com um
+  `TIMEFRAME_MAP` local traduzindo para o inteiro real — nunca importa `MetaTrader5` em
+  `config.py` (win32-only).** Diferente do `trading_mode`, aqui não há valor seguro para
+  degradar: nome desconhecido **falha no boot** (`ValidationError`), não vira default silencioso.
+  `Settings.mt5_timeframe` expõe o inteiro já traduzido; o runner nunca faz o lookup sozinho.
 - **O `Signal` é gravado no `_process_symbol`, não no `_executar`.** Toda decisão da fusão —
   inclusive HOLD — precisa virar linha em `signals` para o outcome comparar previsão com
   resultado e para o filtro de confiança (história 27) ter distribuição real para calibrar. Por
