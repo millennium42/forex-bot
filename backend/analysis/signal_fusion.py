@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from backend.analysis.sentiment_analyzer import SentimentScore
 from backend.analysis.technical_analyzer import TechnicalScore
 from backend.models.enums import Direction
+from backend.observability import measure_latency
 
 __all__ = [
     "DEFAULT_WEIGHTS",
@@ -62,8 +63,9 @@ def fuse_signals(
     vender), o score resultante tenderá a zero (dependendo dos pesos), e a
     confiança será penalizada pela falta de concordância.
     """
-    w_t = weights.technical
-    w_s = weights.sentiment
+    with measure_latency("signal_fusion"):
+        w_t = weights.technical
+        w_s = weights.sentiment
 
     t_conf = technical.confidence
     s_conf = sentiment.confidence if sentiment is not None else 0.0

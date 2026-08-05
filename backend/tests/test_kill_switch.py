@@ -46,8 +46,9 @@ def test_kill_switch_endpoints() -> None:
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
-    from backend.models import Base
+
     from backend.api.dependencies import get_db
+    from backend.models import Base
 
     engine = create_engine(
         "sqlite://",
@@ -55,10 +56,11 @@ def test_kill_switch_endpoints() -> None:
         poolclass=StaticPool,
     )
     Base.metadata.create_all(engine)
-    TestingSessionLocal = sessionmaker(bind=engine)
+    testing_session_local = sessionmaker(bind=engine)
 
-    def override_get_db():
-        db = TestingSessionLocal()
+    from collections.abc import Iterator
+    def override_get_db() -> Iterator[Session]:
+        db = testing_session_local()
         try:
             yield db
         finally:

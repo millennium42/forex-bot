@@ -228,3 +228,10 @@
 - **Aprendizados:**
   - O estado do kill switch foi modelado puramente usando o log de auditoria (eventos KILL_SWITCH_TRIGGERED e KILL_SWITCH_RESET). Consultar o último evento no banco descarta a necessidade de uma tabela adicional ou cache para a feature.
   - Para testes de endpoints FastAPI no SQLite em memória, usou-se poolclass=StaticPool junto com check_same_thread=False para compartilhar a mesma base in-memory entre a thread principal do pytest e as threads worker do Starlette/FastAPI, evitando erros de 'no such table'.
+
+## [2026-08-05] - Historia 19: Observabilidade
+- backend/api/main.py, backend/observability/metrics.py, backend/observability/__init__.py
+- **Aprendizados:**
+  - sentry_sdk integrado diretamente via inicializacao no entry point FastAPI (main.py) com base no DSN, permitindo continuous profiling se habilitado.
+  - O pattern de interceptacao de latencia (measure_latency) foi implementado com um context manager usando structlog, cobrindo os modulos da camada analysis (sentiment, technical e signal_fusion).
+  - Ruff B008 proibe chamadas de funcao em argumentos default (Depends). Ao injetar a sessao DB no /ready via Depends(get_db), e necessario usar # noqa: B008.

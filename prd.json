@@ -208,7 +208,7 @@
         "/health e /ready respondem",
         "latencia medida por estagio"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 20,
