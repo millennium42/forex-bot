@@ -260,3 +260,21 @@
 - Handoff em HANDOFF.md substitui compactacao de contexto: a proxima sessao comeca limpa e le o
   arquivo, que e exatamente a filosofia do Ralph (memoria em arquivo, nao em contexto).
 ---
+## [2026-08-05] — Primeira execucao real do bot: tres bugs que so aparecem fora do teste
+- **Enum gravava o nome, nao o valor.** SQLAlchemy sem `values_callable` envia KILL_SWITCH_TRIGGERED
+  para um tipo que so aceita kill_switch_triggered. A suite inteira passava: os testes de modelo
+  rodam em SQLite, onde o tipo vira CHECK derivado do mesmo mapeamento e fica auto-consistente.
+  Use SEMPRE o helper `pg_enum()` de models/base.py em coluna de enum, nunca `Enum(...)` direto.
+- **env.py do Alembic sobrescrevia a URL do chamador.** `config.set_main_option("sqlalchemy.url",
+  get_settings().database_url)` incondicional fazia as migrations de teste rodarem no banco de DEV
+  — incluindo o `downgrade base` do teardown, que apagava o schema e derrubava o bot. Agora so
+  define a URL quando quem chamou nao definiu.
+- **Testes de integracao usavam o banco de dev.** Passaram a usar sufixo `_test`, criado sob
+  demanda com AUTOCOMMIT (CREATE DATABASE nao roda em transacao). Override por TEST_DATABASE_URL.
+- **Licao geral:** teste em SQLite nao substitui teste no banco real para nada que envolva tipo
+  nativo, trigger ou DDL. Quando o dialeto participa da semantica, o teste tem que rodar no dialeto.
+- **Estado da conta demo:** MetaQuotes-Demo, login 110608815, equity ~19 USD. Com 1% por trade o
+  limite e 0.19 USD, e o menor trade possivel (0.01 lote, SL de ATR*2) arrisca ~0.26 USD. O risk
+  manager barra 100% das ordens — corretamente. Para ver execucao e preciso conta demo com
+  equity >= ~200 USD. Nao afrouxe o limite de risco para "fazer operar".
+---
