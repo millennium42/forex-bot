@@ -198,7 +198,7 @@
         "reset apenas manual",
         "ambos gravam audit_log"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 19,

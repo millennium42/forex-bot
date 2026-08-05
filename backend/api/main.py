@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from backend.api.routers import promotion, signals, trades, ws
+from backend.api.routers import promotion, signals, system, trades, ws
 
 app = FastAPI(
     title="Forex Bot API",
@@ -15,6 +15,7 @@ app = FastAPI(
 app.include_router(promotion.router)
 app.include_router(ws.router)
 app.include_router(signals.router)
+app.include_router(system.router)
 app.include_router(trades.router)
 
 

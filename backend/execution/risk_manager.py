@@ -36,7 +36,11 @@ class RiskManager:
         current_exposure: float,
         trade_monetary_risk: float,
         account_drawdown: float = 0.0,
+        kill_switch_active: bool = False,
     ) -> None:
+        if kill_switch_active:
+            raise KillSwitchError("Kill switch persistente está ativo")
+
         # 1. Kill switch / Daily loss (5%)
         # Se perda diária + risco da nova ordem > max daily loss?
         # A regra de 5% de perda diária: se a perda diária atual já bate 5%, bloqueia.

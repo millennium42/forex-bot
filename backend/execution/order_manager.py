@@ -14,7 +14,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
-from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
+from backend.execution.kill_switch import is_kill_switch_active, trigger_kill_switch
+from backend.execution.risk_manager import (
+    KillSwitchError,
+    OrderRequest,
+    RiskManager,
+    RiskValidationError,
+)
 from backend.models.audit_log import AuditLog
 from backend.models.enums import AuditEventType, Side, TradeStatus
 from backend.models.instrument import Instrument
@@ -57,6 +63,7 @@ class OrderManager:
             return existing
 
         # 1. Gate de risco (INVARIANTE)
+        ks_active = is_kill_switch_active(self.db)
         try:
             self.risk_manager.validate_order(
                 request=request,
@@ -65,7 +72,22 @@ class OrderManager:
                 current_exposure=current_exposure,
                 trade_monetary_risk=trade_monetary_risk,
                 account_drawdown=account_drawdown,
+                kill_switch_active=ks_active,
             )
+        except KillSwitchError as exc:
+            if not ks_active:
+                logger.warning("order_manager.kill_switch_triggered", reason=str(exc))
+                trigger_kill_switch(self.db, reason=str(exc), actor="system")
+
+            logger.warning("order_manager.risk_rejected", reason=str(exc))
+            event = AuditLog(
+                event_type=AuditEventType.ORDER_REJECTED,
+                client_request_id=client_request_id,
+                payload={"reason": str(exc), "symbol": request.symbol, "volume": request.volume},
+            )
+            self.db.add(event)
+            self.db.commit()
+            return None
         except RiskValidationError as exc:
             logger.warning("order_manager.risk_rejected", reason=str(exc))
             event = AuditLog(

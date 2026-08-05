@@ -222,3 +222,9 @@
 - **Aprendizados:**
   - Setup do frontend Next.js usando `npx create-next-app` via PowerShell não interpreta `&&` corretamente. É preferível dividir os comandos ou usar `;`.
   - Recharts com Next.js SSR precisa de cuidado com a renderização de componentes puramente de client side e evitar chamar setState em useEffects síncronos se possível. (lint rules atentas a cascade renders).
+
+## [2026-08-05] - Historia 18: Kill switch
+- backend/api/routers/system.py, backend/execution/kill_switch.py, backend/tests/test_kill_switch.py
+- **Aprendizados:**
+  - O estado do kill switch foi modelado puramente usando o log de auditoria (eventos KILL_SWITCH_TRIGGERED e KILL_SWITCH_RESET). Consultar o último evento no banco descarta a necessidade de uma tabela adicional ou cache para a feature.
+  - Para testes de endpoints FastAPI no SQLite em memória, usou-se poolclass=StaticPool junto com check_same_thread=False para compartilhar a mesma base in-memory entre a thread principal do pytest e as threads worker do Starlette/FastAPI, evitando erros de 'no such table'.

@@ -142,3 +142,17 @@ def test_risk_manager_ftmo_daily_loss(
             current_exposure=0.0,
             trade_monetary_risk=50.0,
         )
+
+
+def test_risk_manager_kill_switch_active(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    with pytest.raises(KillSwitchError, match="Kill switch persistente está ativo"):
+        risk_manager.validate_order(
+            request=valid_request,
+            equity=10000.0,
+            daily_loss=0.0,
+            current_exposure=0.0,
+            trade_monetary_risk=50.0,
+            kill_switch_active=True,
+        )
