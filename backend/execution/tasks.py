@@ -11,8 +11,6 @@ from backend.execution.position_tracker import PositionTracker
 @celery_app.task(name="execution.track_positions")  # type: ignore[untyped-decorator]
 def track_positions_task() -> None:
     """Executa a reconciliação de posições do PositionTracker."""
-    with session_scope() as session:
-        # Usa um client MT5 descartável; se for longo pode manter singleton.
-        with MT5Client() as client:
+    with session_scope() as session, MT5Client() as client:
             tracker = PositionTracker(client, session)
             tracker.reconcile()

@@ -137,7 +137,7 @@
         "outcome referencia o signal originador",
         "pnl e duracao persistidos"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 13,

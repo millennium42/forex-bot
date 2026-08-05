@@ -182,3 +182,10 @@
 - backend/execution/position_tracker.py (PositionTracker), backend/execution/tasks.py, backend/tests/test_position_tracker.py
 - **Aprendizados:**
   - MT5 posições têm ticket e identifier. Para reconciliação, validamos ambos contra mt5_order_id e mt5_position_id do banco.\n  - positions_get() pode retornar tupla vazia quando não tem posição e isso não deve ser tratado como erro.\n  - Tarefa agendada via Celery beat, baseada na configuração de intervalo (position_tracker_interval_seconds).\n
+
+## [2026-08-05] - Historia 12: Outcome recorder
+- backend/learning/outcome_recorder.py (OutcomeRecorder / record_outcome), backend/tests/test_outcome_recorder.py
+- **Aprendizados:**
+  - Outcome registra o pnl_pct isolado das variaveis da conta. Calculado como variacao percentual do preco ((exit_price - entry_price) / entry_price).
+  - A direcao atual (actual_direction) do mercado e deduzida a partir do sinal do PnL: PnL > 0 confirma a direcao original apostada (BUY para Side.BUY, SELL para Side.SELL), enquanto PnL < 0 reflete direcao oposta.
+  - Trade sem sinal anterior que seja lucrativo e considerado "correto". Caso de trade fechado com PnL = 0 vira HOLD.

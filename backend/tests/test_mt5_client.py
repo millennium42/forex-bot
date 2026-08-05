@@ -90,19 +90,19 @@ class FakeTerminal:
         return SimpleNamespace(retcode=10009, order=123, deal=456, price=1.1, volume=0.1)
 
     @property
-    def TRADE_ACTION_DEAL(self) -> int:
+    def TRADE_ACTION_DEAL(self) -> int:  # noqa: N802
         return 1
 
     @property
-    def ORDER_TYPE_BUY(self) -> int:
+    def ORDER_TYPE_BUY(self) -> int:  # noqa: N802
         return 0
 
     @property
-    def ORDER_TYPE_SELL(self) -> int:
+    def ORDER_TYPE_SELL(self) -> int:  # noqa: N802
         return 1
 
     @property
-    def TRADE_RETCODE_DONE(self) -> int:
+    def TRADE_RETCODE_DONE(self) -> int:  # noqa: N802
         return 10009
 
 
