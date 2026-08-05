@@ -209,3 +209,10 @@
 - **Aprendizados:**
   - A promocao para real nao e automatica, o sistema apenas avalia e expoe via endpoint o status (evaluate_promotion_gates e router em FastAPI).
   - O criterio de desvio do forward test contra o backtest compara a diferenca relativa de Profit Factor. A logica permite que a avaliacao ocorra sem acoplamento direto com o modelo de persistencia durante os testes unitarios, injetando o objeto BacktestMetrics simulado.
+
+## [2026-08-05] - Historia 16: API FastAPI
+- backend/api/main.py, backend/api/ws_manager.py, backend/api/routers/ws.py, backend/api/routers/signals.py, backend/api/routers/trades.py, backend/tests/test_api.py
+- **Aprendizados:**
+  - FastAPI app unificando REST (sinais e trades, stubs no momento) e WebSocket.
+  - WebSocket Manager implementado para gerenciar e manter as conexões ativas (`ConnectionManager`), possibilitando enviar broadcast para os clientes conectados.
+  - O uso do TestClient do FastAPI para testar WebSocket é síncrono no script do pytest (`client.websocket_connect`), mas interage bem na mesma execução. Testar o manager de WS de forma assíncrona exige instanciar o manager independentemente para disparar mensagens na lista de WebSockets ativos.

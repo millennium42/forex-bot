@@ -178,7 +178,7 @@
         "OpenAPI valido",
         "WS emite sinais e trades"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 17,
