@@ -15,6 +15,16 @@ interface Bin {
   midpoint: number;
 }
 
+/**
+ * Casas decimais necessárias para que faixas vizinhas não fiquem com o mesmo
+ * rótulo. Com P&L entre 0,08 e 0,38 a faixa mede 0,0375: duas casas ainda
+ * colapsam em "0,03 a 0,03", e o gráfico vira oito colunas indistinguíveis.
+ */
+function decimalsFor(width: number): number {
+  if (width <= 0) return 2;
+  return Math.min(6, Math.max(2, Math.ceil(-Math.log10(width)) + 1));
+}
+
 function buildBins(pnls: number[]): Bin[] {
   const min = Math.min(...pnls);
   const max = Math.max(...pnls);
@@ -22,10 +32,15 @@ function buildBins(pnls: number[]): Bin[] {
     return [{ label: min.toFixed(2), count: pnls.length, midpoint: min }];
   }
   const width = (max - min) / BIN_COUNT;
+  const casas = decimalsFor(width);
   const bins: Bin[] = Array.from({ length: BIN_COUNT }, (_, i) => {
     const start = min + i * width;
     const end = start + width;
-    return { label: `${start.toFixed(1)} a ${end.toFixed(1)}`, count: 0, midpoint: (start + end) / 2 };
+    return {
+      label: `${start.toFixed(casas)} a ${end.toFixed(casas)}`,
+      count: 0,
+      midpoint: (start + end) / 2,
+    };
   });
   for (const pnl of pnls) {
     const idx = Math.min(Math.floor((pnl - min) / width), BIN_COUNT - 1);
@@ -64,8 +79,11 @@ export function PnlHistogramChart({
               labelFormatter={(label) => `Faixa (${currency ?? "?"}): ${label}`}
             />
             <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-              {bins.map((bin) => (
-                <Cell key={bin.label} fill={bin.midpoint >= 0 ? palette.good : palette.critical} />
+              {/* A key é a posição da faixa, não o rótulo: rótulos podem
+                  coincidir quando os valores são muito próximos, e duas Cells
+                  com a mesma key fazem o React duplicar ou omitir barras. */}
+              {bins.map((bin, i) => (
+                <Cell key={i} fill={bin.midpoint >= 0 ? palette.good : palette.critical} />
               ))}
             </Bar>
           </BarChart>
