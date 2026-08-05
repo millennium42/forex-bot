@@ -263,6 +263,61 @@
         "volume abaixo do minimo do broker e rejeitado antes de enviar"
       ],
       "passes": true
+    },
+    {
+      "id": 24,
+      "title": "Runner persiste o Signal",
+      "description": "O runner calcula a fusao e ordena sem nunca gravar o Signal. Sem isso trade.signal_id fica nulo, o Outcome nao tem previsao para comparar com o resultado, e nao existe distribuicao de confianca para calibrar filtro. Pre-requisito das historias 25 a 27.",
+      "acceptanceCriteria": [
+        "todo ciclo que produz direcao buy ou sell grava um Signal antes de enviar a ordem",
+        "signal.inputs guarda os indicadores crus e os pesos aplicados",
+        "signal.weight_version vem do FusedSignal, nao e hard-coded",
+        "trade.signal_id aponta para o Signal que originou a ordem",
+        "sinal HOLD tambem e gravado: a decisao de nao operar e dado de aprendizado",
+        "outcome de um trade com signal_id preenchido tem predicted_direction nao nulo"
+      ],
+      "passes": false
+    },
+    {
+      "id": 25,
+      "title": "Sentimento entra na decisao",
+      "description": "O runner passa sentiment=None para fuse_signals, entao a decisao e puramente tecnica e a confianca tem teto matematico de 0.7 (peso tecnico). Os coletores ja gravam documentos e o sentiment_analyzer ja funciona - falta ligar os dois ao motor.",
+      "acceptanceCriteria": [
+        "runner busca documentos recentes do par e deriva um SentimentScore",
+        "janela de recencia configuravel; documento velho nao influencia decisao de agora",
+        "ausencia de documento resulta em sentiment=None, nao em score neutro forjado",
+        "o score de sentimento vai para signal.sentiment_score e sentiment_confidence",
+        "confianca fundida passa a poder ultrapassar 0.7 quando as duas pontas concordam",
+        "teste cobre: sem documento, documentos concordantes e documentos discordantes"
+      ],
+      "passes": false
+    },
+    {
+      "id": 26,
+      "title": "Timeframe configuravel, default M5",
+      "description": "TIMEFRAME_M1 esta fixo no runner. Em candles de 1 minuto o RSI vive perto de 50 e o %B perto de 0.5: os componentes ficam quase zerados e a confianca tecnica media observada foi 0.19. M5 reduz ruido sem mudar a estrategia.",
+      "acceptanceCriteria": [
+        "timeframe vem da config, com default M5",
+        "aceita M1, M5, M15, M30, H1 por nome, nao por inteiro magico do MT5",
+        "valor invalido falha no boot com mensagem clara, nao silenciosamente",
+        "quantidade de candles por ciclo continua suficiente para o indicador mais longo",
+        "teste garante o mapeamento nome -> constante do MT5"
+      ],
+      "passes": false
+    },
+    {
+      "id": 27,
+      "title": "Filtro de confianca minima calibrado",
+      "description": "O runner so usa fused.confidence para logar: a decisao de operar sai apenas de fused_score >= 0.1. Na pratica o bot executa sinal de 7% de conviccao como se fosse de 70%. O limiar NAO deve ser inventado - precisa sair da distribuicao real de confianca gravada em signals pelas historias 24 a 26.",
+      "acceptanceCriteria": [
+        "runner rejeita sinal abaixo de MIN_SIGNAL_CONFIDENCE e registra o motivo no log",
+        "limiar vem da config, nao de constante no codigo",
+        "script scripts/calibrar_confianca.py reporta a distribuicao de signal.confidence (percentis 50, 75, 90, 95) e quantos sinais sobreviveriam a cada limiar",
+        "o default entregue e justificado por dados no progress.txt, com o n de sinais usado",
+        "se houver menos de 100 sinais gravados, o script diz que a amostra e insuficiente em vez de sugerir um numero",
+        "teste cobre sinal abaixo, igual e acima do limiar"
+      ],
+      "passes": false
     }
   ]
 }
