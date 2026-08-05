@@ -14,14 +14,20 @@ couber no limite de 1% do equity. Não cabendo, não opera.
 from __future__ import annotations
 
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy import func, select
 
-from backend.analysis.signal_fusion import FusedSignal, fuse_signals
-from backend.analysis.technical_analyzer import TechnicalAnalyzer, compute_indicators
+from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal, fuse_signals
+from backend.analysis.technical_analyzer import (
+    IndicatorSnapshot,
+    TechnicalAnalyzer,
+    TechnicalScore,
+    compute_indicators,
+)
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.config import Settings, get_settings
 from backend.db import session_scope
@@ -31,6 +37,7 @@ from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValida
 from backend.models.enums import Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
+from backend.models.signal import Signal
 from backend.models.trade import Trade
 
 if TYPE_CHECKING:
@@ -123,7 +130,8 @@ class BotRunner:
             logger.debug("runner.sem_indicadores", symbol=symbol)
             return
 
-        fused = fuse_signals(technical=self.analyzer.analyze(candles), sentiment=None)
+        technical = self.analyzer.analyze(candles)
+        fused = fuse_signals(technical=technical, sentiment=None)
         logger.info(
             "runner.avaliado",
             symbol=symbol,
@@ -131,10 +139,53 @@ class BotRunner:
             confianca=round(fused.confidence, 3),
         )
 
+        instrument = self._get_or_create_instrument(session, symbol, client)
+        signal = self._registrar_signal(session, instrument, fused, technical, indicadores)
+
         if fused.direction is Direction.HOLD:
             return
 
-        self._executar(symbol, fused, indicadores.atr, client, session, order_manager)
+        self._executar(
+            symbol, fused, indicadores.atr, client, session, order_manager, instrument, signal.id
+        )
+
+    def _registrar_signal(
+        self,
+        session: Session,
+        instrument: Instrument,
+        fused: FusedSignal,
+        technical: TechnicalScore,
+        indicadores: IndicatorSnapshot,
+    ) -> Signal:
+        """Grava a decisão antes de qualquer execução — inclusive quando é HOLD.
+
+        Sem este registro, `trade.signal_id` fica nulo e o outcome (história 12)
+        não tem previsão para comparar com o resultado. HOLD também é gravado:
+        a decisão de não operar é dado de aprendizado para calibrar o filtro de
+        confiança (história 27), não só as decisões que viraram ordem.
+        """
+        signal = Signal(
+            instrument_id=instrument.id,
+            direction=fused.direction,
+            confidence=fused.confidence,
+            fused_score=fused.score,
+            sentiment_score=None,
+            sentiment_confidence=None,
+            technical_score=technical.score,
+            weight_version=fused.weight_version,
+            inputs={
+                "indicators": asdict(indicadores),
+                "technical_components": technical.components,
+                "weights": {
+                    "technical": DEFAULT_WEIGHTS.technical,
+                    "sentiment": DEFAULT_WEIGHTS.sentiment,
+                    "version": fused.weight_version,
+                },
+            },
+        )
+        session.add(signal)
+        session.commit()
+        return signal
 
     def _executar(
         self,
@@ -144,6 +195,8 @@ class BotRunner:
         client: MT5Client,
         session: Session,
         order_manager: OrderManager,
+        instrument: Instrument,
+        signal_id: int | None = None,
     ) -> None:
         if atr <= 0:
             # ATR zero significa volatilidade não medida. Sem ela não há stop
@@ -169,7 +222,6 @@ class BotRunner:
 
         account = client.get_account_info()
         tick = client.get_tick(symbol)
-        instrument = self._get_or_create_instrument(session, symbol, client)
 
         side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
         entry = tick.ask if side is Side.BUY else tick.bid
@@ -204,6 +256,7 @@ class BotRunner:
             daily_loss=self._perda_do_dia(session),
             current_exposure=self._exposicao_aberta(client, account.equity),
             trade_monetary_risk=risco_monetario,
+            signal_id=signal_id,
         )
 
     # -- estado real, nunca presumido ---------------------------------------

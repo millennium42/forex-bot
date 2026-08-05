@@ -31,6 +31,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 21 — Testes do BotRunner | ✅ |
 | 22 — Dashboard rico | ✅ |
 | 23 — Lote mínimo por símbolo | ✅ |
+| 24 — Runner persiste o Signal | ✅ |
 
 ---
 
@@ -76,6 +77,12 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `risk_manager` validar sem quebrar quem já constrói a request sem esse dado.** `None` pula a
   checagem em vez de rejeitar por um valor que ninguém informou — mesma filosofia de
   "ausência de informação não vira decisão", aplicada a validação de risco.
+- **O `Signal` é gravado no `_process_symbol`, não no `_executar`.** Toda decisão da fusão —
+  inclusive HOLD — precisa virar linha em `signals` para o outcome comparar previsão com
+  resultado e para o filtro de confiança (história 27) ter distribuição real para calibrar. Por
+  isso o instrumento (`_get_or_create_instrument`) também subiu para `_process_symbol`: até um
+  HOLD precisa de `instrument_id` para o `Signal`, e `_executar` passou a receber `instrument`
+  como parâmetro em vez de buscar de novo.
 
 ---
 

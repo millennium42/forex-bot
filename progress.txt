@@ -390,4 +390,32 @@
     passado como `terminal=` em teste (três arquivos) precisou do método novo para o mypy strict
     aceitar a injeção.
 ---
----
+
+## [2026-08-05] — História 24: Runner persiste o Signal
+- O runner passou a gravar um `Signal` a cada `_process_symbol`, logo depois da fusão e antes de
+  qualquer decisão de executar — inclusive quando a direção é HOLD. `trade.signal_id` agora aponta
+  para o `Signal` que originou a ordem.
+- Arquivos alterados: `backend/execution/runner.py` (`_registrar_signal` novo,
+  `_get_or_create_instrument` chamado em `_process_symbol` em vez de só em `_executar`,
+  `_executar` recebe `instrument` e `signal_id` como parâmetros), `backend/tests/test_runner.py`
+  (testes existentes de `_executar` atualizados para passar `instrument`; testes novos: signal
+  gravado antes da ordem e ligado ao trade, signal gravado em HOLD, outcome de trade com signal
+  tem `predicted_direction` não nulo).
+- **Aprendizados para as próximas iterações:**
+  - `instrument_id` é NOT NULL em `signals`, então o instrumento precisa existir mesmo no caminho
+    HOLD — não dá para adiar a busca do broker (`get_symbol_info`) para dentro de `_executar` como
+    antes (história 23). O efeito colateral é uma chamada a mais ao broker por ciclo (mesmo em
+    HOLD), aceito porque a alternativa (Signal sem instrument_id) violaria o schema.
+  - `signal.inputs` guarda `asdict(indicadores)` (o `IndicatorSnapshot`, frozen+slots — `asdict`
+    funciona normalmente porque usa `dataclasses.fields()`, não `__dict__`), os componentes do
+    técnico e os pesos efetivamente usados (`DEFAULT_WEIGHTS`, já que o runner ainda chama
+    `fuse_signals` sem override). Isso deixa o weight_optimizer (história 13) e a calibração de
+    confiança (história 27) reproduzíveis sem precisar recomputar indicador.
+  - `weight_version` na coluna vem de `fused.weight_version`, não de `DEFAULT_WEIGHTS.version`
+    direto — se um dia o runner passar a escolher pesos dinamicamente, o campo já reflete a
+    escolha real em vez de ficar hard-coded.
+  - Teste de HOLD determinístico: monkeypatch em `runner_module.fuse_signals` devolvendo um
+    `FusedSignal(direction=HOLD, ...)` fixo. Tentar forçar HOLD só com fixture de candles é frágil
+    — o técnico é reversão à média (gotcha já registrado na história 21) e a direção observada não
+    é garantida.
+---Nenhuma historia concluida na iteracao 2. Parando para inspecao.

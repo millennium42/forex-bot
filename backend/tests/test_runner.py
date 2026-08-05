@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from backend.analysis.signal_fusion import FusedSignal
+from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError
 from backend.config import Settings
 from backend.execution import runner as runner_module
@@ -29,12 +29,18 @@ from backend.execution.kill_switch import trigger_kill_switch
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import RiskManager
 from backend.execution.runner import BotRunner
-from backend.models.enums import Direction, Side
+from backend.learning.outcome_recorder import record_outcome
+from backend.models.enums import Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
+from backend.models.signal import Signal
 from backend.models.trade import Trade
 
 BUY_SIGNAL = FusedSignal(direction=Direction.BUY, score=0.5, confidence=0.8, weight_version="v1.0")
+
+
+def _instrumento(session: Session, client: MT5Client, symbol: str = "EURUSD") -> Instrument:
+    return BotRunner._get_or_create_instrument(session, symbol, client)
 
 
 class _FixedDatetime(datetime):
@@ -182,8 +188,11 @@ def test_executar_atr_invalido_nao_gera_ordem(session: Session, atr_invalido: fl
     runner = _runner()
     client = _client()
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
 
-    runner._executar("EURUSD", BUY_SIGNAL, atr_invalido, client, session, order_manager)
+    runner._executar(
+        "EURUSD", BUY_SIGNAL, atr_invalido, client, session, order_manager, instrumento
+    )
 
     assert session.execute(select(Trade)).scalars().all() == []
 
@@ -196,8 +205,9 @@ def test_executar_stop_loss_e_derivado_do_atr(session: Session, symbol: str, atr
     runner = _runner()
     client = _client()
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client, symbol)
 
-    runner._executar(symbol, BUY_SIGNAL, atr, client, session, order_manager)
+    runner._executar(symbol, BUY_SIGNAL, atr, client, session, order_manager, instrumento)
 
     trade = session.execute(select(Trade)).scalars().one()
     distancia_sl = atr * runner.settings.atr_sl_multiplier
@@ -210,9 +220,11 @@ def test_executar_stop_loss_nao_e_constante_entre_atrs_diferentes(session: Sessi
     runner = _runner()
     client = _client()
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento_eur = _instrumento(session, client, "EURUSD")
+    instrumento_gbp = _instrumento(session, client, "GBPUSD")
 
-    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager)
-    runner._executar("GBPUSD", BUY_SIGNAL, 0.0030, client, session, order_manager)
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento_eur)
+    runner._executar("GBPUSD", BUY_SIGNAL, 0.0030, client, session, order_manager, instrumento_gbp)
 
     trades = session.execute(select(Trade).order_by(Trade.id)).scalars().all()
     assert len(trades) == 2
@@ -226,8 +238,9 @@ def test_executar_usa_volume_minimo_do_broker(session: Session) -> None:
     runner = _runner()
     client = _client(FakeTerminal(volume_min=0.05))
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
 
-    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager)
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento)
 
     trade = session.execute(select(Trade)).scalars().one()
     assert trade.volume == pytest.approx(0.05)
@@ -458,6 +471,71 @@ def test_process_symbol_com_sinal_direcional_executa_ordem(session: Session) -> 
     assert trade.stop_loss != trade.entry_price  # SL vem da volatilidade, não é constante
 
 
+# -- história 24: runner persiste o Signal ------------------------------------
+
+
+def test_process_symbol_grava_signal_antes_da_ordem_e_liga_trade(session: Session) -> None:
+    candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
+    client = _client(FakeTerminal(candle_rows=candles))
+    runner = _runner()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    signal = session.execute(select(Signal)).scalars().one()
+    trade = session.execute(select(Trade)).scalars().one()
+
+    assert trade.signal_id == signal.id
+    assert signal.direction in (Direction.BUY, Direction.SELL)
+    assert signal.weight_version == DEFAULT_WEIGHTS.version
+    assert signal.sentiment_score is None
+    assert signal.sentiment_confidence is None
+    assert signal.technical_score is not None
+    assert "indicators" in signal.inputs
+    assert "atr" in signal.inputs["indicators"]
+    assert signal.inputs["weights"]["version"] == DEFAULT_WEIGHTS.version
+
+
+def test_process_symbol_grava_signal_mesmo_em_hold(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candles = _candle_rows([100.0 + i * 0.1 for i in range(60)])
+    client = _client(FakeTerminal(candle_rows=candles))
+    runner = _runner()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    hold = FusedSignal(direction=Direction.HOLD, score=0.02, confidence=0.05, weight_version="v1.0")
+    monkeypatch.setattr(runner_module, "fuse_signals", lambda **_kw: hold)
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    signal = session.execute(select(Signal)).scalars().one()
+    assert signal.direction == Direction.HOLD
+    assert session.execute(select(Trade)).scalars().all() == []
+
+
+def test_outcome_de_trade_com_signal_tem_predicted_direction(session: Session) -> None:
+    candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
+    client = _client(FakeTerminal(candle_rows=candles))
+    runner = _runner()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    assert trade.signal_id is not None
+    assert trade.entry_price is not None
+    entry_price = trade.entry_price
+    trade.status = TradeStatus.CLOSED
+    trade.opened_at = datetime.now(UTC) - timedelta(minutes=5)
+    trade.closed_at = datetime.now(UTC)
+    session.commit()
+
+    outcome = record_outcome(session, trade, exit_price=entry_price + 0.001, pnl=1.0)
+
+    assert outcome.predicted_direction is not None
+
+
 # -- stop loss não positivo aborta a ordem ------------------------------------
 
 
@@ -466,9 +544,10 @@ def test_executar_com_stop_loss_nao_positivo_nao_gera_ordem(session: Session) ->
     client = _client(FakeTerminal(tick=preco_baixo))
     runner = _runner()
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
 
     # distância do SL (atr * multiplier) maior que o próprio preço de entrada.
-    runner._executar("EURUSD", BUY_SIGNAL, 1.0, client, session, order_manager)
+    runner._executar("EURUSD", BUY_SIGNAL, 1.0, client, session, order_manager, instrumento)
 
     assert session.execute(select(Trade)).scalars().all() == []
 

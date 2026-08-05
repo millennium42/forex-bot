@@ -276,7 +276,7 @@
         "sinal HOLD tambem e gravado: a decisao de nao operar e dado de aprendizado",
         "outcome de um trade com signal_id preenchido tem predicted_direction nao nulo"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 25,
