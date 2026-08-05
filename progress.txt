@@ -242,3 +242,21 @@
   - RateLimiter simples foi criado como uma dependência no FastAPI injetando o cliente do Redis, cobrindo endpoints vitais (health e ready).
   - Teste de rate limiter usa override de dependência simulando um DummyRedis para não depender do servidor no teste unitário.
   - A cobertura global validada fechou em 92% com o rate limiter.
+
+## [2026-08-05] — Revisao pos-Ralph + handoff
+- **Como o Ralph erra:** ele fecha as historias e marca passes:true corretamente, mas cria
+  arquivos fora do escopo e os deixa SEM COMMIT na working tree. Foi assim que apareceu um
+  runner.py com equity=20.0 fixo, current_exposure=0.0 e stop loss constante — o risk manager
+  recebia ficcao e portanto nao protegia nada. Antes de confiar em passes:true, rode `git status`
+  e revise o que ficou solto.
+- **Corolario do "sem mocks em producao":** nunca devolva 0.0 no lugar de dado ausente. Zero e
+  valor legitimo de conta; o consumidor nao consegue distinguir "sem dinheiro" de "sem conexao".
+  Use None e deixe a UI decidir como mostrar. O endpoint /system/account fazia isso errado.
+- **Dubles de teste envelhecem junto com o Protocol.** MT5Terminal ganhou copy_rates_from_pos nas
+  historias 7 e 14; os FakeTerminal ficaram para tras e so o mypy strict pegou. Ao estender um
+  Protocol, procure os dubles no mesmo commit.
+- Alavancagem definida como a mais conservadora possivel: volume sempre no lote minimo, e a ordem
+  ainda precisa passar no limite de 1% do equity.
+- Handoff em HANDOFF.md substitui compactacao de contexto: a proxima sessao comeca limpa e le o
+  arquivo, que e exatamente a filosofia do Ralph (memoria em arquivo, nao em contexto).
+---
