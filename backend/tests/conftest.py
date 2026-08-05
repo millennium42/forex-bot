@@ -12,13 +12,57 @@ Dois níveis de teste de banco:
 from __future__ import annotations
 
 import os
+import sys
 from collections.abc import Iterator
 
 import pytest
+import tenacity
 from sqlalchemy import Engine, create_engine, event, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from backend.models import Base
+
+
+def _sem_dormir(_segundos: float) -> None:
+    """Substitui a espera do backoff. Ver `_sem_espera_de_backoff`."""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sem_espera_de_backoff() -> Iterator[None]:
+    """Neutraliza a espera do `tenacity` em toda a suíte.
+
+    Os testes de retry verificam **quantas** tentativas aconteceram, não quanto
+    tempo se esperou entre elas. Dormir de verdade custava ~40s dos 104s da
+    suíte — o suficiente para estourar o timeout de um agente headless e fazer
+    o loop do Ralph parar achando que travou.
+
+    O patch vai direto no objeto `Retrying` de cada função decorada. Trocar
+    `tenacity.nap.sleep` no módulo não adianta: o `@retry` já guardou referência
+    à função no momento da decoração, e mexer em `time.sleep` global seria
+    intrusivo demais.
+
+    Escopo de sessão porque a varredura de `sys.modules` é cara: rodando por
+    teste ela custava mais tempo do que os `sleep` que economizava.
+
+    O retry continua acontecendo — só a espera entre tentativas vira no-op.
+    """
+    originais: list[tuple[tenacity.BaseRetrying, object]] = []
+
+    for modulo in list(sys.modules.values()):
+        if not getattr(modulo, "__name__", "").startswith("backend."):
+            continue
+        for atributo in list(vars(modulo).values()):
+            alvos = list(vars(atributo).values()) if isinstance(atributo, type) else [atributo]
+            for alvo in alvos:
+                retrying = getattr(alvo, "retry", None)
+                if isinstance(retrying, tenacity.BaseRetrying):
+                    originais.append((retrying, retrying.sleep))
+                    retrying.sleep = _sem_dormir
+
+    yield
+
+    for retrying, original in originais:
+        retrying.sleep = original  # type: ignore[assignment]
 
 
 @event.listens_for(Engine, "connect")
@@ -40,9 +84,12 @@ def session() -> Iterator[Session]:
     engine.dispose()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def pg_url() -> str:
     """URL do banco **de teste**, nunca o de desenvolvimento.
+
+    Escopo de sessão: só lê variáveis de ambiente, e fixtures session-scoped
+    (como o schema migrado uma vez por arquivo) precisam depender dela.
 
     Os testes de migration fazem `downgrade base` no teardown. Apontados para o
     banco de dev, eles apagam o schema e o bot morre no ciclo seguinte com

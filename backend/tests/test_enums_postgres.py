@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from alembic import command
@@ -41,22 +42,34 @@ pytestmark = pytest.mark.integration
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-@pytest.fixture
-def pg_session(pg_engine: Engine, pg_url: str) -> Any:
+@pytest.fixture(scope="session")
+def _schema_migrado(pg_url: str) -> Any:
+    """Aplica as migrations uma vez para o arquivo inteiro.
+
+    Aplicar por teste custava ~2s cada, 48s no total. Estes testes não precisam
+    de banco vazio: cada um insere e lê o próprio registro. O isolamento vem de
+    identificadores únicos por teste, não de recriar o schema 25 vezes.
+    """
     cfg = Config(str(REPO_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(REPO_ROOT / "backend" / "migrations"))
     cfg.set_main_option("sqlalchemy.url", pg_url)
     command.downgrade(cfg, "base")
     command.upgrade(cfg, "head")
-
-    factory = sessionmaker(bind=pg_engine, expire_on_commit=False, future=True)
-    with factory() as s:
-        yield s
+    yield
     command.downgrade(cfg, "base")
 
 
+@pytest.fixture
+def pg_session(pg_engine: Engine, _schema_migrado: Any) -> Any:
+    factory = sessionmaker(bind=pg_engine, expire_on_commit=False, future=True)
+    with factory() as s:
+        yield s
+
+
 def _instrument(session: Session) -> Instrument:
-    inst = Instrument(symbol="EURUSD")
+    # Símbolo único: `instruments.symbol` é UNIQUE e o schema agora é
+    # compartilhado entre os testes do arquivo.
+    inst = Instrument(symbol=f"SYM{uuid4().hex[:8].upper()}")
     session.add(inst)
     session.commit()
     return inst
@@ -103,7 +116,7 @@ def test_todo_side_e_status_de_trade_sao_gravaveis(
     inst = _instrument(pg_session)
     pg_session.add(
         Trade(
-            client_request_id=f"req-{side.value}-{status.value}",
+            client_request_id=f"req-{side.value}-{status.value}-{uuid4().hex[:8]}",
             instrument_id=inst.id,
             side=side,
             status=status,
@@ -125,7 +138,7 @@ def test_toda_origem_de_documento_e_gravavel(pg_session: Session, origem: Docume
     pg_session.add(
         Document(
             source=origem,
-            dedupe_hash=f"hash-{origem.value}",
+            dedupe_hash=f"hash-{origem.value}-{uuid4().hex[:8]}",
             url="http://exemplo.invalid",
             title="titulo",
             content="corpo",
@@ -143,7 +156,7 @@ def test_toda_origem_de_documento_e_gravavel(pg_session: Session, origem: Docume
 def test_outcome_grava_as_duas_direcoes(pg_session: Session) -> None:
     inst = _instrument(pg_session)
     trade = Trade(
-        client_request_id="req-outcome",
+        client_request_id=f"req-outcome-{uuid4().hex[:8]}",
         instrument_id=inst.id,
         side=Side.BUY,
         status=TradeStatus.CLOSED,
