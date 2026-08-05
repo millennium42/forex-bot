@@ -52,6 +52,10 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   migration, de `postgresql.ENUM(..., create_type=False)` + `.create(bind, checkfirst=True)`
   antes dos `create_table` — senão o segundo falha com "type already exists".
 - `ruff` reclama de `type_annotation_map` como mutável de classe: anote com `ClassVar[dict[Any, Any]]`.
+- **Docker Desktop no Windows: use `127.0.0.1`, nunca `localhost`.** O `localhost` resolve para
+  `::1`; o proxy do Docker anuncia `[::]:5432` mas não completa o handshake, e a conexão fica
+  pendurada sem timeout — `alembic upgrade` e os testes `integration` travam indefinidamente.
+  Todas as URLs de banco/Redis usam `127.0.0.1`.
 - `jq` **não** está instalado e o winget falhou nele. Os scripts do Ralph leem `prd.json` via
   Python (`uv run python -c`), sem jq.
 

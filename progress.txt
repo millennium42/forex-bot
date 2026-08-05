@@ -1,4 +1,4 @@
-﻿## Codebase Patterns
+## Codebase Patterns
 - Gerenciador de pacotes e `uv`. Todo comando roda por `uv run`. Nunca pip/poetry.
 - Config so em `backend/config.py`. Nenhum modulo le `os.environ` direto.
 - Invariante de dados vive no schema (NOT NULL, UNIQUE, CHECK, trigger), nao na aplicacao.
@@ -10,35 +10,35 @@
 - Scripts do Ralph leem prd.json via Python, nao jq (jq nao esta instalado nesta maquina).
 
 ---
-## Aprendizados (append-only â€” nunca editar linha anterior)
+## Aprendizados (append-only — nunca editar linha anterior)
 
-[2026-08-04] HistÃ³ria 1 â€” Scaffold
-- Ambiente de dev: Windows 10, sem Docker, `python` do PATH Ã© o stub da Windows Store.
+[2026-08-04] História 1 — Scaffold
+- Ambiente de dev: Windows 10, sem Docker, `python` do PATH é o stub da Windows Store.
   Python 3.12.13 instalado via `uv python install 3.12`. Todo comando roda por `uv run`.
-- `MetaTrader5` Ã© win32-only. Resolvido com marker `sys_platform == 'win32'` no pyproject,
-  para o CI em Ubuntu nÃ£o quebrar na resoluÃ§Ã£o de dependÃªncias.
-- `transformers`+`torch` movidos para o extra `nlp`: ~2GB nÃ£o pertence ao caminho crÃ­tico do CI.
-- O fail-closed do trading mode ficou como propriedade derivada (`effective_trading_mode`), nÃ£o
-  como validador do campo. Motivo: um validador que rejeita valor invÃ¡lido derruba o processo no
-  boot; a propriedade derivada degrada para demo, que Ã© o comportamento seguro desejado.
-  Exige duas condiÃ§Ãµes independentes (`TRADING_MODE=real` + `REAL_TRADING_UNLOCKED=true`) para
-  que um typo em uma variÃ¡vel de ambiente jamais habilite conta real.
+- `MetaTrader5` é win32-only. Resolvido com marker `sys_platform == 'win32'` no pyproject,
+  para o CI em Ubuntu não quebrar na resolução de dependências.
+- `transformers`+`torch` movidos para o extra `nlp`: ~2GB não pertence ao caminho crítico do CI.
+- O fail-closed do trading mode ficou como propriedade derivada (`effective_trading_mode`), não
+  como validador do campo. Motivo: um validador que rejeita valor inválido derruba o processo no
+  boot; a propriedade derivada degrada para demo, que é o comportamento seguro desejado.
+  Exige duas condições independentes (`TRADING_MODE=real` + `REAL_TRADING_UNLOCKED=true`) para
+  que um typo em uma variável de ambiente jamais habilite conta real.
 - API/workers ficam fora de container: o conector MT5 exige terminal nativo no mesmo host.
 
-[2026-08-04] HistÃ³ria 2 â€” Modelos + migrations
+[2026-08-04] História 2 — Modelos + migrations
 - Append-only do audit_log ficou como trigger no Postgres (BEFORE UPDATE OR DELETE por linha
-  + BEFORE TRUNCATE por statement). TRUNCATE precisa de trigger prÃ³prio: nÃ£o dispara o de linha.
-- Dois nÃ­veis de teste de banco: SQLite in-memory (constraints portÃ¡veis, roda em qualquer
-  mÃ¡quina) e Postgres via Alembic (trigger, enum nativo, JSONB) sob o marker `integration`.
-- SQLite ignora FK por default -> listener com PRAGMA foreign_keys=ON no conftest, senÃ£o os
+  + BEFORE TRUNCATE por statement). TRUNCATE precisa de trigger próprio: não dispara o de linha.
+- Dois níveis de teste de banco: SQLite in-memory (constraints portáveis, roda em qualquer
+  máquina) e Postgres via Alembic (trigger, enum nativo, JSONB) sob o marker `integration`.
+- SQLite ignora FK por default -> listener com PRAGMA foreign_keys=ON no conftest, senão os
   testes de FK passariam de mentira.
-- SQLite sÃ³ autoincrementa INTEGER PRIMARY KEY: audit_log.id usa
+- SQLite só autoincrementa INTEGER PRIMARY KEY: audit_log.id usa
   BigInteger().with_variant(Integer(), "sqlite").
-- Enum `direction` aparece em signals e outcomes; na migration os tipos sÃ£o criados uma vez com
-  postgresql.ENUM(create_type=False) + .create(bind, checkfirst=True), senÃ£o o segundo
+- Enum `direction` aparece em signals e outcomes; na migration os tipos são criados uma vez com
+  postgresql.ENUM(create_type=False) + .create(bind, checkfirst=True), senão o segundo
   create_table falha com "type already exists".
-- pg_engine usa connect_timeout=3: sem Postgres de pÃ© o skip precisa ser em segundos.
-- stop_loss NOT NULL no banco: a regra "SL obrigatÃ³rio" vale mesmo se o risk manager for contornado.
+- pg_engine usa connect_timeout=3: sem Postgres de pé o skip precisa ser em segundos.
+- stop_loss NOT NULL no banco: a regra "SL obrigatório" vale mesmo se o risk manager for contornado.
 
 
 ## [2026-08-05] - Historia 3: Conector MT5
@@ -57,4 +57,18 @@
   - get_ticks falha inteira se um simbolo falhar - retorno parcial esconderia do pipeline que a
     visao de mercado esta incompleta.
   - mypy strict: `import MetaTrader5` sem stub retorna Any; use cast(MT5Terminal, MetaTrader5).
+---
+
+## [2026-08-05] — Infra: Docker disponível
+- **Gotcha que custou caro:** com Docker Desktop no Windows, `@localhost:5432` trava a conexão
+  para sempre (sem timeout). O proxy anuncia `[::]:5432` mas não completa o handshake em IPv6.
+  Sintoma: `alembic upgrade head` e os testes `integration` penduram sem nenhuma conexão
+  aparecendo em `pg_stat_activity`. Troca para `127.0.0.1` resolve. Aplicado em config.py,
+  .env.example, conftest.py e ci.yml.
+- **Gotcha de encoding:** `Get-Content -Raw` no PowerShell 5.1 lê arquivo UTF-8 sem BOM como ANSI.
+  Reescrever depois disso duplo-encoda os acentos. Use
+  `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` e `WriteAllText` com
+  `UTF8Encoding($false)`. Para desfazer um duplo-encode já gravado, reinterprete via cp1252 (1252),
+  não latin1 — latin1 quebra travessão e aspas curvas.
+- Com Postgres de pé a suíte roda inteira: 83 testes, zero skip, coverage 93%.
 ---

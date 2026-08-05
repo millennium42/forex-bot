@@ -17,7 +17,7 @@ from sqlalchemy import Engine, inspect, text
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-TABELAS = {"instruments", "signals", "trades", "outcomes", "audit_log"}
+TABELAS = {"instruments", "signals", "trades", "outcomes", "audit_log", "documents"}
 
 
 def _alembic_config(url: str) -> Config:

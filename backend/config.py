@@ -34,10 +34,10 @@ class Settings(BaseSettings):
     real_trading_unlocked: bool = False
 
     # --- Banco / fila -------------------------------------------------------
-    database_url: str = "postgresql+psycopg://forex:forex@localhost:5432/forex_bot"
-    redis_url: str = "redis://localhost:6379/0"
-    celery_broker_url: str = "redis://localhost:6379/1"
-    celery_result_backend: str = "redis://localhost:6379/2"
+    database_url: str = "postgresql+psycopg://forex:forex@127.0.0.1:5432/forex_bot"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    celery_broker_url: str = "redis://127.0.0.1:6379/1"
+    celery_result_backend: str = "redis://127.0.0.1:6379/2"
 
     # --- MetaTrader 5 -------------------------------------------------------
     mt5_login: int | None = None

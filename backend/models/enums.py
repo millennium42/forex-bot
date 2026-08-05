@@ -5,6 +5,17 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class DocumentSource(StrEnum):
+    """Origem de um documento textual coletado.
+
+    A tabela é compartilhada entre os coletores: o que muda entre eles é a
+    origem e como o `dedupe_hash` é derivado, não o schema.
+    """
+
+    NEWS = "news"
+    TWITTER = "twitter"
+
+
 class Direction(StrEnum):
     """Direção de uma decisão de sinal."""
 

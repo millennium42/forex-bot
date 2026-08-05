@@ -43,7 +43,7 @@ def session() -> Iterator[Session]:
 @pytest.fixture
 def pg_url() -> str:
     return os.environ.get(
-        "DATABASE_URL", "postgresql+psycopg://forex:forex@localhost:5432/forex_bot"
+        "DATABASE_URL", "postgresql+psycopg://forex:forex@127.0.0.1:5432/forex_bot"
     )
 
 

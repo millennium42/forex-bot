@@ -52,7 +52,7 @@
         "reprocessar mesma feed nao duplica linhas",
         "hash de URL indexado unico"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 5,

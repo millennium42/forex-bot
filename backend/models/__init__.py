@@ -6,7 +6,8 @@ Importar deste módulo garante que todas as tabelas estejam registradas em
 
 from backend.models.audit_log import AuditLog
 from backend.models.base import Base
-from backend.models.enums import AuditEventType, Direction, Side, TradeStatus
+from backend.models.document import Document
+from backend.models.enums import AuditEventType, Direction, DocumentSource, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
@@ -17,6 +18,8 @@ __all__ = [
     "AuditLog",
     "Base",
     "Direction",
+    "Document",
+    "DocumentSource",
     "Instrument",
     "Outcome",
     "Side",
