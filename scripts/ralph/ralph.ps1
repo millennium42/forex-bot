@@ -62,7 +62,10 @@ for ($i = 1; $i -le $MaxIterations; $i++) {
     Write-Host "  ($($abertas.Count) historia(s) restante(s))"
     Write-Host "==============================================================="
 
-    $output = Get-Content $PromptFile -Raw | & claude --dangerously-skip-permissions --print
+    # ReadAllText com UTF8 explicito: `Get-Content -Raw` no PowerShell 5.1 le
+    # arquivo UTF-8 sem BOM como ANSI e entrega o prompt com acentos corrompidos.
+    $promptText = [System.IO.File]::ReadAllText($PromptFile, [System.Text.Encoding]::UTF8)
+    $output = $promptText | & claude --dangerously-skip-permissions --print
     $output | Write-Host
 
     if ($output -match "<promise>COMPLETE</promise>") {
