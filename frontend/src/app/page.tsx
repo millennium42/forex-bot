@@ -156,11 +156,11 @@ export default function Dashboard() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                 <XAxis dataKey="time" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis domain={['dataMin - 5', 'dataMax + 5']} stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => `R$${val.toFixed(2)}`} />
-                <Tooltip 
+                <YAxis domain={['dataMin - 5', 'dataMax + 5']} stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val: number) => `${account.currency} ${val.toFixed(2)}`} />
+                <Tooltip
                   contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', borderColor: 'rgba(51, 65, 85, 0.5)', borderRadius: '8px', color: '#fff' }}
                   itemStyle={{ color: '#3b82f6' }}
-                  formatter={(value: number) => [`R$ ${value.toFixed(2)}`, 'Capital']}
+                  formatter={(value) => [`${account.currency} ${Number(value ?? 0).toFixed(2)}`, 'Capital']}
                 />
                 <Area type="monotone" dataKey="equity" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorEquity)" />
               </AreaChart>
