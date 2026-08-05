@@ -15,7 +15,8 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 5 — Twitter collector | ✅ |
 | 6 — Sentiment analyzer | ✅ |
 | 7 — Technical analyzer | ✅ |
-| 8–20 | ⏳ pendentes |
+| 8 — Signal fusion | ✅ |
+| 9–20 | ⏳ pendentes |
 
 ---
 
@@ -128,3 +129,4 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   Postgres e Redis.
 - **O job `frontend` do CI só nasce na história 17**, junto com o diretório. Job que não tem o que
   rodar é ruído.
+- **Ralph + Ruflo:** O Ralph Loop (`scripts/ralph/ralph.ps1`) itera pelas histórias pendentes. O agente (Claude) foi instruído a usar ferramentas e swarms do Ruflo para auxiliar nas tarefas complexas, mas o Ruflo e o Ralph não anulam as invariantes de fail-closed e rulesets exigidos no projeto. Se a instalação do Ruflo via `npx` falhar por limites de memória, recomenda-se instalar os plugins no Claude.

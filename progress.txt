@@ -156,3 +156,10 @@
   - Cai no RUF002 de novo (simbolo x unicode em docstring). O gotcha ja estava no AGENTS.md.
   - 189 testes, coverage global 95%, 100% no modulo novo.
 ---
+## [2026-08-05] - Historia 8: Signal fusion
+- backend/analysis/signal_fusion.py (FusionWeights, FusedSignal, fuse_signals), backend/tests/test_signal_fusion.py
+- **Aprendizados:**
+  - A confiança da fusão penaliza dois cenários explicitamente: informações ausentes/nulas (ex: sentimento offline) e componentes discordantes (técnica compra, sentimento vende).
+  - Score direcional é preservado independentemente da confiança. A decisão categórica (BUY, SELL, HOLD) obedece a um threshold de convicção.
+  - FusedSignal grava o `weight_version` para a mesma decisão poder ser reproduzida ou testada contra novos pesos no otimizador (história 13).
+  - O type hint do mypy pra `indicators=None` não exigiu `# type: ignore` no strict mode.

@@ -95,7 +95,7 @@
         "decisao em {buy, sell, hold}",
         "confianca em [0,1]"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 9,
