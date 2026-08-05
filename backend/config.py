@@ -63,10 +63,12 @@ class Settings(BaseSettings):
     timeframe: str = "M5"
 
     # --- Regras de risco (§4) ----------------------------------------------
-    max_risk_per_trade_pct: float = Field(default=1.0, gt=0, le=100)
+    # Volume da ordem é derivado deste percentual (história 30), não mais
+    # sempre o lote mínimo — 0.5% é o teto conservador até haver amostra real
+    # de resultado para recalibrar.
+    max_risk_per_trade_pct: float = Field(default=0.5, gt=0, le=100)
     max_total_exposure_pct: float = Field(default=3.0, gt=0, le=100)
     max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)
-    max_trades_per_day: int = Field(default=10, gt=0)
     atr_sl_multiplier: float = Field(default=2.0, gt=0)
     macro_blackout_minutes: int = Field(default=15, ge=0)
 

@@ -359,7 +359,7 @@
         "teste: equity maior gera volume maior, proporcionalmente",
         "teste: ATR maior (stop mais distante) gera volume menor para o mesmo risco"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 31,

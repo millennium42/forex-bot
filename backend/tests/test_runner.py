@@ -322,19 +322,89 @@ def test_executar_stop_loss_nao_e_constante_entre_atrs_diferentes(session: Sessi
     assert trades[0].stop_loss != trades[1].stop_loss
 
 
-# -- lote mínimo vem do broker por símbolo (história 23) ---------------------
+# -- volume derivado do risco (história 30) -----------------------------------
 
 
-def test_executar_usa_volume_minimo_do_broker(session: Session) -> None:
+def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
     runner = _runner()
-    client = _client(FakeTerminal(volume_min=0.05))
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0010
+    runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    distancia_sl = atr * runner.settings.atr_sl_multiplier
+    esperado = (100_000.0 * runner.settings.max_risk_per_trade_pct / 100.0) / (
+        distancia_sl * instrumento.contract_size
+    )
+    assert trade.volume == pytest.approx(esperado)
+
+
+def _instrumento_padrao(**overrides: object) -> Instrument:
+    base: dict[str, object] = {
+        "symbol": "EURUSD",
+        "contract_size": 100_000.0,
+        "min_volume": 0.01,
+        "volume_step": 0.01,
+        "volume_max": 100.0,
+    }
+    base.update(overrides)
+    return Instrument(**base)
+
+
+def test_executar_equity_maior_gera_volume_maior_proporcionalmente() -> None:
+    distancia_sl = 0.0010 * 2.0
+
+    volume_equity_baixo = BotRunner._calcular_volume(
+        50_000.0, distancia_sl, _instrumento_padrao(), 0.5
+    )
+    volume_equity_alto = BotRunner._calcular_volume(
+        100_000.0, distancia_sl, _instrumento_padrao(), 0.5
+    )
+
+    assert volume_equity_baixo is not None
+    assert volume_equity_alto == pytest.approx(volume_equity_baixo * 2, rel=1e-6)
+
+
+def test_executar_atr_maior_gera_volume_menor_para_mesmo_risco() -> None:
+    volume_stop_curto = BotRunner._calcular_volume(100_000.0, 0.002, _instrumento_padrao(), 0.5)
+    volume_stop_longo = BotRunner._calcular_volume(100_000.0, 0.006, _instrumento_padrao(), 0.5)
+
+    assert volume_stop_curto is not None
+    assert volume_stop_longo is not None
+    assert volume_stop_longo < volume_stop_curto
+
+
+def test_calcular_volume_arredonda_para_baixo_no_step_do_broker() -> None:
+    instrumento = _instrumento_padrao(volume_step=0.1)
+
+    # risco alvo = 100_000 * 0.5% = 500; distância_sl*contract = 0.0021*100_000 = 210
+    # volume bruto = 500/210 = 2.3809... — deve arredondar para 2.3, nunca 2.4.
+    volume = BotRunner._calcular_volume(100_000.0, 0.0021, instrumento, 0.5)
+
+    assert volume == pytest.approx(2.3)
+
+
+def test_calcular_volume_respeita_volume_max_do_broker() -> None:
+    instrumento = _instrumento_padrao(volume_max=1.0)
+
+    volume = BotRunner._calcular_volume(1_000_000.0, 0.001, instrumento, 0.5)
+
+    assert volume == pytest.approx(1.0)
+
+
+def test_executar_ordem_rejeitada_quando_risco_nao_cobre_lote_minimo(session: Session) -> None:
+    """Risco não paga o lote mínimo: a ordem é rejeitada, nunca arredondada para cima."""
+    runner = _runner()
+    client = _client(FakeTerminal(volume_min=5.0))
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
     runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento)
 
-    trade = session.execute(select(Trade)).scalars().one()
-    assert trade.volume == pytest.approx(0.05)
+    assert session.execute(select(Trade)).scalars().all() == []
 
 
 # -- idempotência com granularidade de minuto (AC4) --------------------------

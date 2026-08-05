@@ -14,6 +14,8 @@ class Instrument(Base, CreatedAtMixin):
         CheckConstraint("digits >= 0", name="digits_nao_negativo"),
         CheckConstraint("contract_size > 0", name="contract_size_positivo"),
         CheckConstraint("min_volume > 0", name="min_volume_positivo"),
+        CheckConstraint("volume_step > 0", name="volume_step_positivo"),
+        CheckConstraint("volume_max > 0", name="volume_max_positivo"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -30,6 +32,13 @@ class Instrument(Base, CreatedAtMixin):
     # Menor volume negociável do símbolo no broker (`symbol_info().volume_min`).
     # Alguns brokers exigem mais que o mínimo padrão de 0.01.
     min_volume: Mapped[float] = mapped_column(Float, nullable=False, default=0.01)
+
+    # Passo de volume do símbolo no broker (`symbol_info().volume_step`): todo
+    # volume enviado precisa ser múltiplo deste valor.
+    volume_step: Mapped[float] = mapped_column(Float, nullable=False, default=0.01)
+
+    # Maior volume negociável por ordem no símbolo (`symbol_info().volume_max`).
+    volume_max: Mapped[float] = mapped_column(Float, nullable=False, default=100.0)
 
     # Desligar um instrumento não apaga histórico — só o tira da rotação.
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

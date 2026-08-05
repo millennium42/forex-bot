@@ -37,6 +37,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 27 — Filtro de confiança mínima calibrado | ✅ |
 | 28 — P0: exposição em unidade coerente | ✅ |
 | 29 — Perda flutuante conta e drawdown acumulado bloqueia | ✅ |
+| 30 — Volume proporcional ao equity | ✅ |
 
 ---
 
@@ -200,6 +201,20 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   despercebido lá mesmo sem migration — só o Postgres real expõe a ausência. `ADD VALUE` funciona
   dentro da transação padrão do Alembic (Postgres 12+), desde que o valor novo não seja usado na
   mesma transação que o adiciona. Ver `7a2f9c1d4e6b_add_drawdown_audit_events.py`.
+- **Volume da ordem é dimensionado pelo risco, não mais um lote fixo (história 30).**
+  `BotRunner._calcular_volume` faz `volume = (equity * risco%) / (distância_sl * contract_size)`,
+  arredondado **para baixo** no `volume_step` do broker (nunca para cima — isso infla o risco
+  real). Se o risco configurado não paga nem o `min_volume` do broker, devolve `None` e a ordem é
+  rejeitada em `_executar` — mesma filosofia de "ausência de cobertura não vira ordem
+  sub-dimensionada". Um `+ 1e-9` antes do `math.floor` absorve erro de ponto flutuante da divisão
+  (`6.9999999999997` precisa virar `7`, não `6`). O teto por **contagem** de trades diários
+  (`MAX_TRADES_PER_DAY`) saiu de cena nesta história — quem protege agora é só o limite de perda
+  (diário + drawdown do pico, histórias 18/29), não mais um número de operações.
+- **`mapped_column(default=...)` só se aplica no INSERT/flush, nunca na construção do objeto
+  Python em memória.** Um teste que cria `Instrument(symbol="X", contract_size=100_000.0)` sem
+  `session.add()`/commit e usa o objeto na hora (ex.: passando pra uma função pura como
+  `_calcular_volume`) recebe `instrument.volume_step is None`, não o default do model — precisa
+  passar todos os campos usados explicitamente no construtor.
 
 ---
 

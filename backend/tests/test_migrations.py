@@ -97,8 +97,9 @@ def test_stop_loss_nulo_e_recusado_no_postgres(migrated: Engine) -> None:
         conn.execute(
             text(
                 "INSERT INTO instruments "
-                "(symbol, digits, point, contract_size, min_volume, active) "
-                "VALUES ('EURUSD', 5, 0.00001, 100000, 0.01, true)"
+                "(symbol, digits, point, contract_size, min_volume, volume_step, "
+                "volume_max, active) "
+                "VALUES ('EURUSD', 5, 0.00001, 100000, 0.01, 0.01, 100.0, true)"
             )
         )
     with pytest.raises(Exception, match="stop_loss"), migrated.begin() as conn:

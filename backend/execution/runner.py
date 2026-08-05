@@ -6,13 +6,17 @@ recebe forem reais. Nada aqui é hard-coded — equity vem do broker, exposiçã
 vem das posições abertas, perda do dia vem do banco, e o stop vem da
 volatilidade medida.
 
-Postura de alavancagem: **a mais conservadora possível**. O volume é sempre o
-lote mínimo, e ainda assim a ordem só passa se o risco monetário resultante
-couber no limite de 1% do equity. Não cabendo, não opera.
+Postura de alavancagem: **dimensionada pelo risco, não pelo lote**. O volume da
+ordem é derivado de `MAX_RISK_PER_TRADE_PCT` do equity e da distância do stop
+(história 30) — quanto mais volátil o par, menor o lote para o mesmo risco
+monetário. Quando o risco configurado não paga nem o lote mínimo do broker, a
+ordem é rejeitada em vez de sair sub-dimensionada (lote mínimo) ou
+sobre-arriscada (arredondar para cima).
 """
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
@@ -45,11 +49,10 @@ from backend.execution.drawdown_guard import (
 from backend.execution.kill_switch import is_kill_switch_active
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
-from backend.models.enums import Direction, Side, TradeStatus
+from backend.models.enums import Direction, Side
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
-from backend.models.trade import Trade
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -292,16 +295,6 @@ class BotRunner:
             logger.debug("runner.posicao_ja_aberta", symbol=symbol)
             return
 
-        # Teto diário de ordens (§4 do PRD).
-        enviados = self._trades_de_hoje(session)
-        if enviados >= self.settings.max_trades_per_day:
-            logger.info(
-                "runner.teto_diario_atingido",
-                enviados=enviados,
-                limite=self.settings.max_trades_per_day,
-            )
-            return
-
         account = client.get_account_info()
         tick = client.get_tick(symbol)
 
@@ -320,13 +313,24 @@ class BotRunner:
             logger.warning("runner.stop_invalido", symbol=symbol, stop_loss=stop_loss)
             return
 
-        risco_monetario = distancia_sl * instrument.min_volume * instrument.contract_size
+        volume = self._calcular_volume(
+            account.equity, distancia_sl, instrument, self.settings.max_risk_per_trade_pct
+        )
+        if volume is None:
+            logger.info(
+                "runner.risco_nao_cobre_lote_minimo",
+                symbol=symbol,
+                min_volume=instrument.min_volume,
+            )
+            return
+
+        risco_monetario = distancia_sl * volume * instrument.contract_size
 
         order_manager.place_order(
             request=OrderRequest(
                 symbol=symbol,
                 side=side,
-                volume=instrument.min_volume,
+                volume=volume,
                 price=entry,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
@@ -415,39 +419,63 @@ class BotRunner:
         return any(p.symbol == symbol for p in client.get_positions())
 
     @staticmethod
-    def _trades_de_hoje(session: Session) -> int:
-        """Ordens enviadas hoje, para o teto diário (§4 do PRD).
+    def _calcular_volume(
+        equity: float, distancia_sl: float, instrument: Instrument, risk_pct: float
+    ) -> float | None:
+        """Volume dimensionado pelo risco configurado (história 30).
 
-        Conta do banco: o teto é por dia, não por execução do processo.
+        `volume = (equity * risco%) / (distância_sl * contract_size)`,
+        arredondado **para baixo** no `volume_step` do broker — nunca para
+        cima, porque isso infla o risco real acima do configurado. Devolve
+        `None` quando o risco não paga nem o lote mínimo do broker: a ordem é
+        rejeitada em vez de sair sub-dimensionada (lote mínimo fixo) ou
+        sobre-arriscada (arredondar para cima até o mínimo).
         """
-        inicio = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
-        total = session.execute(
-            select(func.count())
-            .select_from(Trade)
-            .where(Trade.created_at >= inicio, Trade.status != TradeStatus.REJECTED)
-        ).scalar_one()
-        return int(total)
+        risco_monetario_alvo = equity * (risk_pct / 100.0)
+        volume_bruto = risco_monetario_alvo / (distancia_sl * instrument.contract_size)
+
+        # Epsilon absorve erro de ponto flutuante na divisão (ex.: 6.999999999997
+        # não pode arredondar para 6 quando o valor exato é 7).
+        passos = math.floor(volume_bruto / instrument.volume_step + 1e-9)
+        volume = round(passos * instrument.volume_step, 8)
+
+        if volume < instrument.min_volume:
+            return None
+
+        return min(volume, instrument.volume_max)
 
     @staticmethod
     def _get_or_create_instrument(session: Session, symbol: str, client: MT5Client) -> Instrument:
-        """Busca ou cria o instrumento, sincronizando `min_volume` com o broker.
+        """Busca ou cria o instrumento, sincronizando os limites de volume com o broker.
 
-        O lote mínimo é lido do broker a cada chamada, não só na criação: é o
-        broker quem decide esse valor, e ele pode mudar sem que o registro
-        local seja recriado.
+        Lote mínimo, passo e lote máximo são lidos do broker a cada chamada,
+        não só na criação: é o broker quem decide esses valores, e eles podem
+        mudar sem que o registro local seja recriado.
         """
-        min_volume = client.get_symbol_info(symbol).volume_min
+        info = client.get_symbol_info(symbol)
 
         instrument = session.execute(
             select(Instrument).where(Instrument.symbol == symbol)
         ).scalar_one_or_none()
         if instrument is not None:
-            if instrument.min_volume != min_volume:
-                instrument.min_volume = min_volume
+            mudou = (
+                instrument.min_volume != info.volume_min
+                or instrument.volume_step != info.volume_step
+                or instrument.volume_max != info.volume_max
+            )
+            if mudou:
+                instrument.min_volume = info.volume_min
+                instrument.volume_step = info.volume_step
+                instrument.volume_max = info.volume_max
                 session.commit()
             return instrument
 
-        instrument = Instrument(symbol=symbol, min_volume=min_volume)
+        instrument = Instrument(
+            symbol=symbol,
+            min_volume=info.volume_min,
+            volume_step=info.volume_step,
+            volume_max=info.volume_max,
+        )
         session.add(instrument)
         session.commit()
         return instrument

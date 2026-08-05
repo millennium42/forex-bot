@@ -34,6 +34,13 @@
   CHECK do enum Python atual, entao um valor novo passa despercebido lá mesmo sem migration - so
   o Postgres real expõe a ausencia. ADD VALUE funciona dentro da transacao padrao do Alembic
   (Postgres 12+), desde que o valor novo nao seja usado na mesma transacao que o adiciona.
+- `mapped_column(default=...)` so se aplica no INSERT/flush, nunca na construcao do objeto Python
+  em memoria. `Instrument(symbol="X")` sem `session.add()`/commit tem `volume_step is None` (nao o
+  default do model) se usado na hora por uma funcao pura - passe todos os campos usados
+  explicitamente no construtor em teste unitario que nao persiste o objeto.
+- Arredondamento de volume/lote para baixo no passo do broker: `math.floor(bruto/step + 1e-9) *
+  step`. O epsilon absorve erro de ponto flutuante da divisao (6.999999999997 tem que virar 7, nao
+  6) sem arredondar para cima de verdade nunca.
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -595,4 +602,33 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
   - `sum()` de um gerador vazio devolve `int` 0, não `float` 0.0 — inofensivo aqui porque `max(0.0,
     -flutuante)` força o resultado de volta a `float`, mas vale lembrar ao somar campos float de
     listas que podem estar vazias.
+---
+
+## [2026-08-05] — História 30: Volume proporcional ao equity
+- O volume da ordem deixou de ser sempre o lote mínimo do broker: agora é derivado do risco
+  configurado (`MAX_RISK_PER_TRADE_PCT`, default reduzido de 1.0 para 0.5) — `volume = (equity *
+  risco%) / (distância_sl * contract_size)`, arredondado para baixo no `volume_step` do broker.
+  Quando o risco não paga nem o `min_volume`, a ordem é rejeitada em vez de arredondar para cima.
+- O teto por CONTAGEM de trades diários (`MAX_TRADES_PER_DAY`) foi removido do config e do
+  runner — quem protege agora é só o limite de perda (diário + drawdown do pico), não mais um
+  número de operações.
+- Arquivos alterados: `backend/config.py` (`max_risk_per_trade_pct=0.5`, remoção de
+  `max_trades_per_day`), `backend/models/instrument.py` (`volume_step`, `volume_max` + checks),
+  `backend/migrations/versions/0f81a5aba6e8_add_instrument_volume_step_max.py` (novo),
+  `backend/collection/mt5_client.py` (`SymbolInfo.volume_step/volume_max`,
+  `get_symbol_info` lê do broker com fallback), `backend/execution/runner.py`
+  (`_calcular_volume` novo, `_executar` usa o volume derivado, `_get_or_create_instrument`
+  sincroniza os 3 limites, `_trades_de_hoje` e o bloqueio por teto diário removidos), testes em
+  `backend/tests/test_runner.py`, `test_runner_limites.py`, `test_mt5_client.py` e
+  `test_migrations.py` (INSERT cru precisou listar as 2 colunas novas).
+- **Aprendizados para as próximas iterações:**
+  - Ver os dois padrões novos no topo do arquivo (`mapped_column(default=...)` só no flush;
+    arredondamento para baixo com epsilon).
+  - `SymbolInfo.volume_step`/`volume_max` seguem o mesmo padrão de fallback do `contract_size`:
+    `float(getattr(raw, "campo", 0) or default)` — broker/dublê sem o campo não quebra o boot,
+    assume o valor comum do mercado (step 0.01, max 100 lotes).
+  - Remover um gate baseado em contagem (teto diário de trades) e substituir por um baseado em
+    valor monetário de perda é uma mudança de postura mais ampla que só trocar um número: os
+    testes que existiam só para o contador (`_trades_de_hoje`) tiveram que ser removidos junto,
+    não adaptados — não fazia mais sentido nenhuma cobertura para uma função que deixou de existir.
 ---
