@@ -84,5 +84,5 @@ warn_unreachable = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["MetaTrader5.*", "ta.*", "feedparser.*", "textblob.*", "celery.*"]
+module = ["MetaTrader5.*", "ta.*", "feedparser.*", "textblob.*", "transformers.*", "celery.*"]
 ignore_missing_imports = true

@@ -13,7 +13,8 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 3 — Conector MT5 | ✅ |
 | 4 — News collector | ✅ |
 | 5 — Twitter collector | ✅ |
-| 6–20 | ⏳ pendentes |
+| 6 — Sentiment analyzer | ✅ |
+| 7–20 | ⏳ pendentes |
 
 ---
 
@@ -32,6 +33,16 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   Coletor novo implementa o Protocol; não reescreve o insert com dedupe.
 - **Coletor é best-effort** (ao contrário do MT5, que falha fechado): fonte indisponível é
   logada e pulada. Só o pipeline que dimensiona ordem não tolera visão parcial.
+- **Dependência pesada entra por Protocol + loader de módulo.** `MT5Terminal`, `SentimentBackend`
+  e `CacheClient` seguem o mesmo formato: Protocol na assinatura, import dentro de uma função
+  `_load_*` no nível do módulo. O teste faz `monkeypatch.setattr(modulo, "_load_x", ...)`; o
+  runtime carrega o pacote de verdade. Nenhum teste do CI chega a baixar modelo ou abrir terminal.
+- **Faixa numérica é garantida na construção, não por convenção.** `SentimentScore` faz clamp no
+  `__post_init__`, então nem o modelo nem uma entrada de cache adulterada produzem valor fora de
+  [-1,1] / [0,1]. Vale para os scores das próximas histórias (técnico, fusion).
+- **Ausência de informação é `confidence=0`, nunca um score inventado.** Texto vazio, rótulo
+  desconhecido, cache morto: todos devolvem score 0 com confiança 0. Quem consome pondera pela
+  confiança, então o sinal simplesmente não pesa.
 
 ---
 
@@ -71,6 +82,16 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   teste para exercitar o filtered stream do Twitter.
 - Task Celery não expõe `.queue`. Para asserir a fila de destino sem broker, use
   `app.amqp.router.route({}, "nome.da.task")["queue"].name`.
+- `ruff` com o ruleset `RUF` inclui **RUF100 (noqa inútil)**. Colocar `# noqa: BLE001` num
+  `except Exception` vira erro, porque `BLE` não está no `select`. Não anote o que não é regra.
+- **RUF002**: caractere ambíguo em docstring (`×`, aspas curvas tipográficas) é erro de lint.
+  Acentos normais passam; símbolo matemático unicode, não.
+- Módulo novo que importa pacote fora do core precisa entrar em `[[tool.mypy.overrides]]` com
+  `ignore_missing_imports` — senão o mypy quebra na máquina que não tem o extra (`transformers.*`
+  foi adicionado na história 6).
+- Teste `integration` que grava em Redis precisa de **chave única por execução** (`uuid4()` no
+  texto). Com chave fixa e TTL longo, a segunda rodada da suíte lê a entrada da rodada anterior e
+  a asserção de "modelo chamado uma vez" passa por acidente — ou falha, dependendo da ordem.
 
 ---
 
