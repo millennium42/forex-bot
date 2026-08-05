@@ -197,3 +197,10 @@
   - Alembic pode gerar constraints muito longas dependendo dos nomes do SQLite/Postgres. Um '# noqa: E501' resolveu problemas de lint no arquivo de migracao.
   - mypy narrowing para atributos mapeados do banco pode dar dor de cabeca em asserts sucessivos num teste. Ler e re-validar a mesma variavel exige 'session.refresh()' para que o mypy nao reclame de 'Statement is unreachable' devida a falso estado estatico.
 
+## [2026-08-05] - Historia 14: Backtester
+- backend/learning/backtester.py (Backtester, BacktestMetrics, SimulatedTrade), backend/tests/test_backtester.py
+- **Aprendizados:**
+  - O backtester emula a execução iterando sobre a série temporal e reconstruindo o estado passo a passo.
+  - Para obedecer à invariante "sem branch de código específico de teste no pipeline", o Backtester consome o `TechnicalAnalyzer` diretamente (já testado na história 7) e faz `fuse_signals` injetando `sentiment=None`. Isso força a fusão a degradar a confiança sem inventar dado.
+  - O controle de abertura/fechamento das posições modela as mesmas regras de TP/SL ATR-based projetadas para o live.
+  - O cálculo do Sharpe Ratio anualizado no backtester exige cuidado sem a informação de timestamps dos candles fechados. A escolha foi fazer um Sharpe simples por trade (retorno médio por trade / desvio padrão).

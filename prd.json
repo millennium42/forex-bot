@@ -157,7 +157,7 @@
         "sem branch de codigo especifico de teste no pipeline",
         "metricas de saida iguais as do promotion gate"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 15,
