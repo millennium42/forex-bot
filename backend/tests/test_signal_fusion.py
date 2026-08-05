@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-
 from backend.analysis.sentiment_analyzer import SentimentScore
 from backend.analysis.signal_fusion import (
     DEFAULT_WEIGHTS,
-    FusedSignal,
     FusionWeights,
     fuse_signals,
 )

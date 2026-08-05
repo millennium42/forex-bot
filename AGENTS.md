@@ -16,7 +16,9 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 6 — Sentiment analyzer | ✅ |
 | 7 — Technical analyzer | ✅ |
 | 8 — Signal fusion | ✅ |
-| 9–20 | ⏳ pendentes |
+| 9 — Risk manager | ✅ |
+| 10 — Order manager | ✅ |
+| 11–20 | ⏳ pendentes |
 
 ---
 

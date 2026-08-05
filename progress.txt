@@ -170,3 +170,10 @@
   - O risk manager atua como uma função pura que recebe o estado da conta (equity, daily_loss, etc) e a proposta de trade. Isso o mantém desacoplado da busca de dados e extremamente testável (100% coverage sem mocks).
   - FTMO possui regras específicas de perda diária e max drawdown que são avaliadas a cada ordem proposta.
   - A invariante de "único caminho para a ordem" é preparada ao focar o risk_manager apenas na validação: o `order_manager` futuro dependerá dessa aprovação para agir.
+
+## [2026-08-05] - Historia 10: Order manager
+- backend/execution/order_manager.py e backend/tests/test_order_manager.py
+- **Aprendizados:**
+  - Idempotência resolvida no banco antes do broker: o lock otimista via `client_request_id` (com `IntegrityError` rollback) previne ordens duplicadas, enquanto o DB atua como fonte de verdade.
+  - A validação de risco foi colocada no topo de `place_order`. Qualquer ordem rejeitada nem vira trade, gera apenas `AuditLog(ORDER_REJECTED)`.
+  - Constantes de MT5 (ex: TRADE_ACTION_DEAL, ORDER_TYPE_BUY) consumidas como propriedades via protocolo e com `# noqa: N802` satisfazem o ruff sem perder tipagem rigorosa no mock `FakeTerminal`.

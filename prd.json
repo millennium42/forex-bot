@@ -117,7 +117,7 @@
         "segunda chamada com mesmo client_request_id nao duplica ordem",
         "toda ordem passa antes pelo risk_manager"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 11,

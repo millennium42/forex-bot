@@ -49,6 +49,16 @@ class MT5Terminal(Protocol):
     def account_info(self) -> Any: ...
     def symbol_info_tick(self, symbol: str) -> Any: ...
     def symbol_select(self, symbol: str, enable: bool) -> bool: ...
+    def order_send(self, request: dict[str, Any]) -> Any: ...
+
+    @property
+    def TRADE_ACTION_DEAL(self) -> int: ...  # noqa: N802
+    @property
+    def ORDER_TYPE_BUY(self) -> int: ...  # noqa: N802
+    @property
+    def ORDER_TYPE_SELL(self) -> int: ...  # noqa: N802
+    @property
+    def TRADE_RETCODE_DONE(self) -> int: ...  # noqa: N802
 
 
 @dataclass(frozen=True, slots=True)

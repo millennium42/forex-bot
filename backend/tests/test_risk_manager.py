@@ -111,6 +111,7 @@ def test_risk_manager_kill_switch_daily_loss(
             trade_monetary_risk=50.0,
         )
 
+
 def test_risk_manager_ftmo_max_drawdown(
     risk_manager: RiskManager, valid_request: OrderRequest
 ) -> None:
@@ -124,6 +125,7 @@ def test_risk_manager_ftmo_max_drawdown(
             trade_monetary_risk=50.0,
             account_drawdown=1000.0,
         )
+
 
 def test_risk_manager_ftmo_daily_loss(
     risk_manager: RiskManager, valid_request: OrderRequest

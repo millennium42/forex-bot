@@ -1,0 +1,309 @@
+"""Gerenciador de ordens.
+
+Responsável por enviar ordens ao broker (MT5) garantindo idempotência e a
+passagem obrigatória pelo risk manager.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import structlog
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from backend.collection.mt5_client import MT5Client, MT5ConnectionError
+from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
+from backend.models.audit_log import AuditLog
+from backend.models.enums import AuditEventType, Side, TradeStatus
+from backend.models.instrument import Instrument
+from backend.models.trade import Trade
+
+logger = structlog.get_logger(__name__)
+
+
+class OrderManager:
+    def __init__(
+        self,
+        mt5_client: MT5Client,
+        db_session: Session,
+        risk_manager: RiskManager,
+    ) -> None:
+        self.mt5_client = mt5_client
+        self.db = db_session
+        self.risk_manager = risk_manager
+
+    def place_order(
+        self,
+        request: OrderRequest,
+        client_request_id: str,
+        instrument_id: int,
+        equity: float,
+        daily_loss: float,
+        current_exposure: float,
+        trade_monetary_risk: float,
+        signal_id: int | None = None,
+        account_drawdown: float = 0.0,
+    ) -> Trade | None:
+        """Gera ou recupera uma ordem de forma idempotente, executando no MT5.
+
+        Se a ordem for rejeitada pelo risk_manager, retorna None e grava no audit_log.
+        """
+        # Idempotência
+        existing = self.db.scalar(select(Trade).where(Trade.client_request_id == client_request_id))
+        if existing:
+            logger.info("order_manager.idempotent_hit", client_request_id=client_request_id)
+            return existing
+
+        # 1. Gate de risco (INVARIANTE)
+        try:
+            self.risk_manager.validate_order(
+                request=request,
+                equity=equity,
+                daily_loss=daily_loss,
+                current_exposure=current_exposure,
+                trade_monetary_risk=trade_monetary_risk,
+                account_drawdown=account_drawdown,
+            )
+        except RiskValidationError as exc:
+            logger.warning("order_manager.risk_rejected", reason=str(exc))
+            event = AuditLog(
+                event_type=AuditEventType.ORDER_REJECTED,
+                client_request_id=client_request_id,
+                payload={"reason": str(exc), "symbol": request.symbol, "volume": request.volume},
+            )
+            self.db.add(event)
+            self.db.commit()
+            return None
+
+        # 2. Lock otimista no banco
+        mode = self.risk_manager.settings.effective_trading_mode.value
+        sl = request.stop_loss
+        if sl is None:
+            raise RuntimeError("Stop loss ausente após validação de risco")  # Invariante
+
+        trade = Trade(
+            client_request_id=client_request_id,
+            instrument_id=instrument_id,
+            signal_id=signal_id,
+            side=request.side,
+            status=TradeStatus.PENDING,
+            volume=request.volume,
+            stop_loss=sl,
+            take_profit=request.take_profit,
+            trading_mode=mode,
+        )
+        self.db.add(trade)
+
+        try:
+            self.db.flush()
+        except IntegrityError:
+            self.db.rollback()
+            existing = self.db.scalar(
+                select(Trade).where(Trade.client_request_id == client_request_id)
+            )
+            if existing:
+                return existing
+            raise
+
+        req_event = AuditLog(
+            event_type=AuditEventType.ORDER_REQUESTED,
+            client_request_id=client_request_id,
+            payload={
+                "symbol": request.symbol,
+                "side": request.side.value,
+                "volume": request.volume,
+            },
+        )
+        self.db.add(req_event)
+
+        # 3. Envia ao MT5
+        terminal = self.mt5_client.terminal
+        action = getattr(terminal, "TRADE_ACTION_DEAL", 1)
+        if request.side == Side.BUY:
+            order_type = getattr(terminal, "ORDER_TYPE_BUY", 0)
+        else:
+            order_type = getattr(terminal, "ORDER_TYPE_SELL", 1)
+
+        mt5_req: dict[str, Any] = {
+            "action": action,
+            "symbol": request.symbol,
+            "volume": float(request.volume),
+            "type": order_type,
+            "price": float(request.price),
+            "deviation": 20,
+            "comment": client_request_id[:16],
+            "sl": float(sl),
+        }
+        if request.take_profit is not None:
+            mt5_req["tp"] = float(request.take_profit)
+
+        try:
+            result = terminal.order_send(mt5_req)
+        except Exception as exc:
+            logger.error("order_manager.mt5_exception", exc_info=True)
+            trade.status = TradeStatus.REJECTED
+            self.db.commit()
+            raise MT5ConnectionError("Erro interno ao enviar ordem pro MT5") from exc
+
+        if result is None:
+            code, msg = terminal.last_error()
+            trade.status = TradeStatus.REJECTED
+            self.db.commit()
+            logger.warning("order_manager.mt5_none_result", code=code, msg=msg)
+            return trade
+
+        retcode_done = getattr(terminal, "TRADE_RETCODE_DONE", 10009)
+        if getattr(result, "retcode", None) != retcode_done:
+            logger.warning(
+                "order_manager.mt5_rejected",
+                retcode=getattr(result, "retcode", -1),
+                comment=getattr(result, "comment", ""),
+            )
+            trade.status = TradeStatus.REJECTED
+            rej_event = AuditLog(
+                event_type=AuditEventType.ORDER_REJECTED,
+                client_request_id=client_request_id,
+                payload={
+                    "retcode": getattr(result, "retcode", -1),
+                    "comment": getattr(result, "comment", ""),
+                },
+            )
+            self.db.add(rej_event)
+            self.db.commit()
+            return trade
+
+        # Sucesso
+        trade.status = TradeStatus.OPEN
+        trade.mt5_order_id = getattr(result, "order", None)
+        trade.mt5_position_id = getattr(result, "deal", None)
+        trade.entry_price = getattr(result, "price", None)
+
+        placed_event = AuditLog(
+            event_type=AuditEventType.ORDER_PLACED,
+            client_request_id=client_request_id,
+            payload={
+                "order": trade.mt5_order_id,
+                "price": trade.entry_price,
+                "volume": getattr(result, "volume", None),
+            },
+        )
+        self.db.add(placed_event)
+        self.db.commit()
+        return trade
+
+    def _get_symbol(self, instrument_id: int) -> str:
+        instrument = self.db.get(Instrument, instrument_id)
+        if not instrument:
+            raise RuntimeError(f"Instrumento {instrument_id} inexistente")
+        return instrument.symbol
+
+    def modify_trade(self, trade: Trade, sl: float, tp: float | None = None) -> bool:
+        """Modifica SL/TP de um trade existente."""
+        if trade.status != TradeStatus.OPEN:
+            return False
+
+        terminal = self.mt5_client.terminal
+        action = getattr(terminal, "TRADE_ACTION_SLTP", 6)
+
+        pos_id = trade.mt5_position_id or trade.mt5_order_id
+        if not pos_id:
+            logger.error("order_manager.modify_missing_id", trade_id=trade.id)
+            return False
+
+        symbol = self._get_symbol(trade.instrument_id)
+
+        mt5_req: dict[str, Any] = {
+            "action": action,
+            "position": pos_id,
+            "symbol": symbol,
+            "sl": float(sl),
+        }
+        if tp is not None:
+            mt5_req["tp"] = float(tp)
+
+        try:
+            result = terminal.order_send(mt5_req)
+        except Exception:
+            logger.error("order_manager.mt5_modify_exception", exc_info=True)
+            return False
+
+        if result is None:
+            return False
+
+        retcode_done = getattr(terminal, "TRADE_RETCODE_DONE", 10009)
+        retcode_no_changes = getattr(terminal, "TRADE_RETCODE_NO_CHANGES", 10025)
+
+        rc = getattr(result, "retcode", -1)
+        if rc in (retcode_done, retcode_no_changes):
+            trade.stop_loss = sl
+            trade.take_profit = tp
+
+            event = AuditLog(
+                event_type=AuditEventType.ORDER_MODIFIED,
+                client_request_id=trade.client_request_id,
+                payload={"new_sl": sl, "new_tp": tp, "retcode": rc},
+            )
+            self.db.add(event)
+            self.db.commit()
+            return True
+
+        return False
+
+    def close_trade(self, trade: Trade, price: float) -> bool:
+        """Encerra uma ordem aberta enviando ordem oposta."""
+        if trade.status != TradeStatus.OPEN:
+            return False
+
+        terminal = self.mt5_client.terminal
+        action = getattr(terminal, "TRADE_ACTION_DEAL", 1)
+
+        if trade.side == Side.BUY:
+            order_type = getattr(terminal, "ORDER_TYPE_SELL", 1)
+        else:
+            order_type = getattr(terminal, "ORDER_TYPE_BUY", 0)
+
+        pos_id = trade.mt5_position_id or trade.mt5_order_id
+        if not pos_id:
+            logger.error("order_manager.close_missing_id", trade_id=trade.id)
+            return False
+
+        symbol = self._get_symbol(trade.instrument_id)
+
+        mt5_req: dict[str, Any] = {
+            "action": action,
+            "symbol": symbol,
+            "volume": float(trade.volume),
+            "type": order_type,
+            "position": pos_id,
+            "price": float(price),
+            "deviation": 20,
+            "comment": "close",
+        }
+
+        try:
+            result = terminal.order_send(mt5_req)
+        except Exception:
+            logger.error("order_manager.mt5_close_exception", exc_info=True)
+            return False
+
+        if result is None:
+            return False
+
+        retcode_done = getattr(terminal, "TRADE_RETCODE_DONE", 10009)
+        rc = getattr(result, "retcode", -1)
+        if rc == retcode_done:
+            trade.status = TradeStatus.CLOSED
+            # trade.closed_at = datetime.now(UTC)? It's managed somewhere else maybe
+
+            event = AuditLog(
+                event_type=AuditEventType.ORDER_CLOSED,
+                client_request_id=trade.client_request_id,
+                payload={"close_price": price, "retcode": rc},
+            )
+            self.db.add(event)
+            self.db.commit()
+            return True
+
+        return False

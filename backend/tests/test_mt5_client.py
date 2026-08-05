@@ -80,6 +80,25 @@ class FakeTerminal:
         self.selected.append(symbol)
         return True
 
+    def order_send(self, request: dict[str, Any]) -> Any:
+        return SimpleNamespace(retcode=10009, order=123, deal=456, price=1.1, volume=0.1)
+
+    @property
+    def TRADE_ACTION_DEAL(self) -> int:
+        return 1  # noqa: N802
+
+    @property
+    def ORDER_TYPE_BUY(self) -> int:
+        return 0  # noqa: N802
+
+    @property
+    def ORDER_TYPE_SELL(self) -> int:
+        return 1  # noqa: N802
+
+    @property
+    def TRADE_RETCODE_DONE(self) -> int:
+        return 10009  # noqa: N802
+
 
 def _settings(**kw: object) -> Settings:
     base: dict[str, object] = {

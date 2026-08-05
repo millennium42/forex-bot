@@ -50,7 +50,7 @@ class RiskManager:
         ftmo_max_daily = equity * (self.settings.ftmo_max_daily_loss_pct / 100.0)
         if daily_loss >= ftmo_max_daily:
             raise KillSwitchError("Limite de perda diária FTMO excedido")
-            
+
         # FTMO max drawdown
         ftmo_max_drawdown = equity * (self.settings.ftmo_max_drawdown_pct / 100.0)
         # Note: In a real scenario, this would be computed over the initial balance,
