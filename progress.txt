@@ -8,6 +8,11 @@
 - Docstrings e comentarios em portugues; identificadores em ingles.
 - Migrations sao aditivas. Nunca editar revisao ja aplicada.
 - Scripts do Ralph leem prd.json via Python, nao jq (jq nao esta instalado nesta maquina).
+- Congelar `datetime.now()` em teste sob mypy strict: o `now(cls, tz=None)` tem que devolver
+  `cls(...)`, nao `datetime(...)` - senao o `override` quebra por tipo de retorno incompativel.
+- `monkeypatch.setattr(modulo, "time", ...)` quebra o mypy strict quando "time" e so um
+  `import time` no topo do modulo (nao reexportado). Importe `time` no proprio teste e mocke
+  `time.sleep` ali - mesmo objeto de modulo, mesmo efeito, sem acessar atributo nao reexportado.
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -277,4 +282,28 @@
   limite e 0.19 USD, e o menor trade possivel (0.01 lote, SL de ATR*2) arrisca ~0.26 USD. O risk
   manager barra 100% das ordens — corretamente. Para ver execucao e preciso conta demo com
   equity >= ~200 USD. Nao afrouxe o limite de risco para "fazer operar".
+---
+
+## [2026-08-05] — História 21: Testes do BotRunner
+- backend/tests/test_runner.py (18 testes: kill switch, ATR invalido, SL derivado do ATR,
+  client_request_id por minuto, perda do dia, exposicao aberta, falha de MT5, _process_symbol
+  ponta-a-ponta, run() com max_cycles).
+- **Aprendizados para as próximas iterações:**
+  - `runner.py` já existia (criado antes desta história, sem testes dedicados) — o trabalho foi
+    só a suíte de teste, sem tocar o módulo de produção.
+  - Para testar `_executar`/`_process_symbol` isolado, construir `FusedSignal` manualmente em vez
+    de gerar sinal real via `TechnicalAnalyzer` — desacopla o teste do runner da lógica direcional
+    do `technical_analyzer` (que é reversão à média, não segue tendência; uma série em alta forte
+    pode virar SELL na fusão dependendo da confiança relativa de cada componente).
+  - `run()` é testável sem Postgres nem MT5 real: `MT5Client` e `session_scope` são monkeypatchados
+    no módulo do runner (`runner_module.MT5Client = lambda **_: fake_client`,
+    `runner_module.session_scope = fake_contextmanager`), e `run_cycle` é substituído por um spy
+    para não reprocessar símbolos de verdade.
+  - Ver os dois gotchas novos no topo do arquivo (Codebase Patterns): congelar `datetime.now()`
+    sob mypy strict, e monkeypatch de nome só-importado (`time`) via o módulo original, não via
+    atributo do módulo testado.
+  - Cobertura final: `backend/execution/runner.py` 98% (faltam só 2 linhas: um branch de
+    `RiskValidationError` inalcançável no fluxo atual porque o `order_manager` já absorve essa
+    exceção internamente, e o retorno `HOLD` de `_process_symbol`). Suíte inteira: 292 testes,
+    coverage global 91.95%.
 ---

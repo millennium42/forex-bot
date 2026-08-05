@@ -28,6 +28,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 18 — Kill switch | ✅ |
 | 19 — Observabilidade | ✅ |
 | 20 — Hardening | ✅ |
+| 21 — Testes do BotRunner | ✅ |
 
 ---
 
@@ -118,6 +119,19 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `warn_unreachable` acusa o corpo do `if` — use `math.isnan` para checar NaN de escalar.
 - Série OHLC constante deixa o **RSI indefinido** (nem ganho, nem perda → NaN). Fixture de teste
   "plana" não exercita o caminho feliz dos indicadores; exercita o caminho de NaN.
+- **Congelar `datetime.now()` em teste, sob mypy strict:** o `@classmethod now(cls, tz=None)`
+  precisa devolver `cls(...)`, não `datetime(...)` — devolver o tipo base quebra o `override`
+  (`Return type "datetime" incompatible with return type "FixedDatetime" in supertype`).
+- **`monkeypatch.setattr(modulo, "time", ...)` (ou qualquer nome só `import`ado no topo do
+  módulo, sem estar em `__all__`) quebra o mypy strict com `does not explicitly export attribute`.**
+  Para mockar `time.sleep` chamado de dentro de outro módulo, importe `time` no próprio teste e
+  faça `monkeypatch.setattr(time, "sleep", ...)` — é o mesmo objeto de módulo, então o efeito é
+  idêntico sem acessar o atributo pelo caminho não reexportado.
+- **RSI e Bollinger no `technical_analyzer` são reversão à média, não seguem tendência.** Uma
+  série de candles em alta forte não garante `Direction.BUY` na fusão — o RSI sobrecomprado puxa
+  para venda e pode vencer o MACD (momento) dependendo da confiança relativa. Teste de integração
+  ponta-a-ponta (candles → ordem) não deve fixar a direção esperada; fixe amplitude pequena (ATR
+  baixo, cabe no limite de 1% de risco) e valide só que a ordem foi criada, não o lado.
 
 ---
 

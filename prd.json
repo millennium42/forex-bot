@@ -235,7 +235,7 @@
         "falha de MT5 encerra o ciclo em vez de pular simbolo",
         "coverage do runner >= 80%"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 22,
