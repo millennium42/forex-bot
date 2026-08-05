@@ -318,6 +318,59 @@
         "teste cobre sinal abaixo, igual e acima do limiar"
       ],
       "passes": true
+    },
+    {
+      "id": 28,
+      "title": "P0: exposicao em unidade coerente",
+      "description": "runner._exposicao_aberta devolve PERCENTUAL do equity e risk_manager.validate_order soma esse numero a trade_monetary_risk (dolares) comparando com equity*3% (dolares). Com equity 100k o teto so dispararia com ~30.000% de exposicao real: o limite de 3% e efetivamente inexistente. Agrava que o caminho degenerado equity<=0 devolve 100.0 pretendendo bloquear tudo e vira 'US$ 100', que tambem nao bloqueia.",
+      "acceptanceCriteria": [
+        "toda a cadeia usa valor monetario na moeda da conta; nenhum percentual cruza fronteira",
+        "o nome do parametro e da funcao deixa a unidade explicita",
+        "teste que reproduz o cenario antigo: exposicao real acima do teto e REJEITADA",
+        "equity <= 0 bloqueia de fato qualquer ordem",
+        "teste do caminho degenerado e do limite exato (na fronteira, aceita; acima, rejeita)"
+      ],
+      "passes": false
+    },
+    {
+      "id": 29,
+      "title": "Perda flutuante conta e drawdown acumulado bloqueia",
+      "description": "_perda_do_dia soma apenas Outcome.pnl<0, e Outcome so existe quando a posicao fecha. Cinco posicoes abertas com -800 flutuantes resultam em daily_loss=0 e o bot continua abrindo: o limite de 5% so e avaliado depois que a perda foi realizada, exatamente quando ja nao protege. Alem disso o bloqueio hoje e so diario (reseta a meia-noite); passa a existir tambem um drawdown ACUMULADO medido a partir do PICO de equity, e os dois limites valem ao mesmo tempo.",
+      "acceptanceCriteria": [
+        "perda do dia inclui o P&L flutuante das posicoes abertas, nao so o realizado",
+        "novo limite MAX_DRAWDOWN_FROM_PEAK_PCT bloqueia novas ordens quando o equity cai essa porcentagem abaixo do maior equity ja observado",
+        "o pico e persistido no banco: reiniciar o processo nao zera o drawdown",
+        "os dois limites (diario e acumulado do pico) sao avaliados; qualquer um bloqueia",
+        "bloqueio por drawdown grava audit_log e exige reset manual, como o kill switch",
+        "teste: lucro de 10% seguido de queda de 10% conta como drawdown do pico, nao do inicio"
+      ],
+      "passes": false
+    },
+    {
+      "id": 30,
+      "title": "Volume proporcional ao equity",
+      "description": "O volume e sempre o lote minimo (0.01), entao o risco real por trade e ~0.0003% do equity - o MAX_RISK_PER_TRADE_PCT nunca foi usado de verdade. O volume passa a ser derivado do risco: volume = (equity * risco%) / (distancia_sl * contract_size), arredondado para baixo no passo do broker. O teto por CONTAGEM de trades diarios sai de cena: quem governa e a perda, nao o numero de operacoes.",
+      "acceptanceCriteria": [
+        "MAX_RISK_PER_TRADE_PCT default passa para 0.5",
+        "volume derivado do risco, arredondado PARA BAIXO no volume_step do broker",
+        "volume nunca abaixo do minimo do broker: se o risco calculado nao paga o lote minimo, a ordem e rejeitada em vez de arredondar para cima",
+        "volume respeita o volume_max do broker",
+        "MAX_TRADES_PER_DAY deixa de bloquear ordens; a protecao vem dos limites de perda",
+        "teste: equity maior gera volume maior, proporcionalmente",
+        "teste: ATR maior (stop mais distante) gera volume menor para o mesmo risco"
+      ],
+      "passes": false
+    },
+    {
+      "id": 31,
+      "title": "contract_size sincronizado com o broker",
+      "description": "_get_or_create_instrument sincroniza volume_min mas nunca contract_size, que fica no default 100_000 para todo simbolo criado pelo bot. Como o risco por trade multiplica por esse valor, simbolo de contrato diferente (XAUUSD usa 100) tem o risco errado por ordem de grandeza. O valor ja vem em SymbolInfo.contract_size.",
+      "acceptanceCriteria": [
+        "contract_size e volume_step sincronizados do broker no mesmo ponto que volume_min",
+        "migration aditiva para volume_step",
+        "teste: instrumento existente com contract_size desatualizado e corrigido no ciclo"
+      ],
+      "passes": false
     }
   ]
 }
