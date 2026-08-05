@@ -25,6 +25,7 @@ from typing import Any, Protocol, runtime_checkable
 import structlog
 
 from backend.config import Settings, get_settings
+from backend.observability import measure_latency
 
 __all__ = [
     "CacheClient",
@@ -271,9 +272,10 @@ class SentimentAnalyzer:
 
     def analyze(self, text: str) -> SentimentScore:
         """Score do texto, servido do cache quando já calculado."""
-        if not text.strip():
-            # Sem texto não há o que pontuar — e o modelo não é chamado à toa.
-            return neutral(self.engine)
+        with measure_latency("sentiment_analysis"):
+            if not text.strip():
+                # Sem texto não há o que pontuar — e o modelo não é chamado à toa.
+                return neutral(self.engine)
 
         chave = cache_key(self.engine, text)
         em_cache = self._cache_get(chave)

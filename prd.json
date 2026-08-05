@@ -95,7 +95,7 @@
         "decisao em {buy, sell, hold}",
         "confianca em [0,1]"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 9,
@@ -107,7 +107,7 @@
         "kill switch diario ativa em 5%",
         "um teste por regra"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 10,
@@ -117,7 +117,7 @@
         "segunda chamada com mesmo client_request_id nao duplica ordem",
         "toda ordem passa antes pelo risk_manager"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 11,
@@ -127,7 +127,7 @@
         "divergencia gera registro em audit_log",
         "intervalo configuravel"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 12,
@@ -137,7 +137,7 @@
         "outcome referencia o signal originador",
         "pnl e duracao persistidos"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 13,
@@ -147,7 +147,7 @@
         "nova versao nunca sobrescreve a anterior",
         "rollback para versao anterior funciona"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 14,
@@ -157,7 +157,7 @@
         "sem branch de codigo especifico de teste no pipeline",
         "metricas de saida iguais as do promotion gate"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 15,
@@ -168,7 +168,7 @@
         "minimo de 200 trades exigido",
         "passar nos gates nao promove sozinho"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 16,
@@ -178,7 +178,7 @@
         "OpenAPI valido",
         "WS emite sinais e trades"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 17,
@@ -188,7 +188,7 @@
         "tsc --noEmit limpo",
         "eslint limpo"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 18,
@@ -198,7 +198,7 @@
         "reset apenas manual",
         "ambos gravam audit_log"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 19,
@@ -208,7 +208,7 @@
         "/health e /ready respondem",
         "latencia medida por estagio"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 20,
@@ -218,6 +218,49 @@
         "coverage global >= 80%",
         "testes de falha de rede passam",
         "P0 = 0 e P1 = 0"
+      ],
+      "passes": true
+    },
+    {
+      "id": 21,
+      "title": "Testes do BotRunner",
+      "description": "Cobertura do motor autonomo: ciclo, kill switch, ATR-based SL, idempotencia por minuto, exposicao real.",
+      "acceptanceCriteria": [
+        "kill switch ativo impede o ciclo inteiro",
+        "ATR zero ou negativo nao gera ordem",
+        "stop loss e derivado do ATR, nao constante",
+        "dois ciclos no mesmo minuto geram o mesmo client_request_id",
+        "perda do dia soma apenas outcomes negativos de hoje",
+        "exposicao inclui posicoes abertas fora do bot",
+        "falha de MT5 encerra o ciclo em vez de pular simbolo",
+        "coverage do runner >= 80%"
+      ],
+      "passes": false
+    },
+    {
+      "id": 22,
+      "title": "Dashboard rico",
+      "description": "Painel operacional com abas, graficos, modais e insights. Especificacao completa na secao 7 do HANDOFF.md.",
+      "acceptanceCriteria": [
+        "abas: visao geral, trades, sinais, gates, auditoria",
+        "graficos: equity curve, distribuicao de pnl, win rate por par, sentimento vs tecnica, heatmap por hora",
+        "modais: detalhe do trade, detalhe do sinal, confirmacao do kill switch",
+        "cards de insight respondem uma pergunta, nao so mostram numero",
+        "conta desconectada mostra travessao, nunca zero monetario",
+        "badge de modo real permanente e em vermelho no header",
+        "dark mode e light mode",
+        "tsc --noEmit e eslint limpos"
+      ],
+      "passes": false
+    },
+    {
+      "id": 23,
+      "title": "Lote minimo por simbolo",
+      "description": "Substituir VOLUME_MINIMO hard-coded por symbol_info(symbol).volume_min lido do MT5.",
+      "acceptanceCriteria": [
+        "volume minimo vem do broker por simbolo",
+        "coluna min_volume em instruments com migration aditiva",
+        "volume abaixo do minimo do broker e rejeitado antes de enviar"
       ],
       "passes": false
     }

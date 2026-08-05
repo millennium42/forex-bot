@@ -22,7 +22,7 @@ def create_celery_app(settings: Settings | None = None) -> Celery:
         "forex_bot",
         broker=settings.celery_broker_url,
         backend=settings.celery_result_backend,
-        include=["backend.collection.tasks"],
+        include=["backend.collection.tasks", "backend.execution.tasks"],
     )
     app.conf.update(
         task_default_queue=COLLECTION_QUEUE,
@@ -35,6 +35,12 @@ def create_celery_app(settings: Settings | None = None) -> Celery:
         # tarefa para a fila. O dedupe por hash torna o reprocesso inofensivo.
         task_acks_late=True,
         worker_prefetch_multiplier=1,
+        beat_schedule={
+            "track-positions": {
+                "task": "execution.track_positions",
+                "schedule": settings.position_tracker_interval_seconds,
+            },
+        },
     )
     return app
 

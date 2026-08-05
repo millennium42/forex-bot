@@ -49,6 +49,20 @@ class MT5Terminal(Protocol):
     def account_info(self) -> Any: ...
     def symbol_info_tick(self, symbol: str) -> Any: ...
     def symbol_select(self, symbol: str, enable: bool) -> bool: ...
+    def order_send(self, request: dict[str, Any]) -> Any: ...
+    def positions_get(self) -> Any: ...
+    def copy_rates_from_pos(
+        self, symbol: str, timeframe: int, start_pos: int, count: int
+    ) -> Any: ...
+
+    @property
+    def TRADE_ACTION_DEAL(self) -> int: ...  # noqa: N802
+    @property
+    def ORDER_TYPE_BUY(self) -> int: ...  # noqa: N802
+    @property
+    def ORDER_TYPE_SELL(self) -> int: ...  # noqa: N802
+    @property
+    def TRADE_RETCODE_DONE(self) -> int: ...  # noqa: N802
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +97,18 @@ class Tick:
     @property
     def mid(self) -> float:
         return (self.bid + self.ask) / 2
+
+
+@dataclass(frozen=True, slots=True)
+class Position:
+    ticket: int
+    identifier: int
+    symbol: str
+    volume: float
+    type: int
+    sl: float
+    tp: float
+    price_open: float
 
 
 def _load_terminal() -> MT5Terminal:
@@ -245,6 +271,58 @@ class MT5Client:
         """
         self._assert_conectado()
         return {symbol: self.get_tick(symbol) for symbol in symbols}
+
+    @retry(
+        retry=retry_if_exception_type(MT5ConnectionError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        reraise=True,
+    )
+    def get_positions(self) -> list[Position]:
+        self._assert_conectado()
+        raw_positions = self.terminal.positions_get()
+        if raw_positions is None:
+            # positions_get() pode retornar () vazio ou None se erro (MT5 docs: None se erro)
+            # Mas na verdade as vezes retorna None quando não tem? Não, None é falha
+            # Se a tuple está vazia (), isso indica 0 posições.
+            code, _ = self.terminal.last_error()
+            if code != 1:  # 1 is SUCCESS in MT5? Treat None as falha
+                raise MT5ConnectionError(f"positions_get() falhou: {self._erro()}")
+            return []
+
+        return [
+            Position(
+                ticket=int(p.ticket),
+                identifier=int(getattr(p, "identifier", p.ticket)),
+                symbol=str(p.symbol),
+                volume=float(p.volume),
+                type=int(p.type),
+                sl=float(p.sl),
+                tp=float(p.tp),
+                price_open=float(p.price_open),
+            )
+            for p in raw_positions
+        ]
+
+    @retry(
+        retry=retry_if_exception_type(MT5ConnectionError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        reraise=True,
+    )
+    def get_candles(self, symbol: str, timeframe: int, count: int) -> Any:
+        """Busca histórico OHLC (Velás) de um símbolo como DataFrame pandas."""
+        self._assert_conectado()
+        import pandas as pd
+
+        raw_rates = self.terminal.copy_rates_from_pos(symbol, timeframe, 0, count)
+        if raw_rates is None or len(raw_rates) == 0:
+            raise MT5ConnectionError(f"copy_rates_from_pos({symbol}) vazio: {self._erro()}")
+
+        df = pd.DataFrame(raw_rates)
+        if "time" in df.columns:
+            df["time"] = pd.to_datetime(df["time"], unit="s")
+        return df
 
     # -- context manager ----------------------------------------------------
     def __enter__(self) -> MT5Client:

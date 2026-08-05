@@ -1,14 +1,15 @@
 # Ralph — instruções da iteração (forex-bot)
 
 Você é um agente de codificação autônomo trabalhando no repositório **forex-bot**.
-Adaptado de [snarktank/ralph](https://github.com/snarktank/ralph) para o stack Python deste projeto.
+Adaptado de [snarktank/ralph](https://github.com/snarktank/ralph) e utilizando o [Ruflo](https://github.com/ruvnet/ruflo) como orquestrador agentic-harness.
 
 ## Sua tarefa
 
 1. Leia `CLAUDE.md` (invariantes e comandos), `AGENTS.md` (contexto acumulado) e
    `progress.txt` — comece pela seção **Codebase Patterns** no topo do progress.
 2. Leia `prd.json` e `tasks/prd-forex-bot.md`.
-3. Confirme que está na branch `feat/forex-bot`. Se não estiver, faça checkout ou crie a partir de `main`.
+3. **Integração com Ruflo**: Você está operando dentro do harness do Ruflo. Utilize suas ferramentas MCP (como `swarm_init`, acesso à memória, testes e persistência) sempre que possível para resolver as histórias de forma inteligente e coordenando agentes se necessário.
+4. Confirme que está na branch `feat/forex-bot`. Se não estiver, faça checkout ou crie a partir de `main`.
 4. Pegue a história de **menor `id`** com `passes: false`. Uma só.
 5. Implemente **exatamente** essa história. Nada além dela. Ponytail (YAGNI):
    stdlib > dependência que já existe > implementação própria.
