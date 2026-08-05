@@ -28,6 +28,8 @@ from ta.momentum import RSIIndicator
 from ta.trend import MACD
 from ta.volatility import AverageTrueRange, BollingerBands
 
+from backend.observability import measure_latency
+
 __all__ = [
     "ATR_WINDOW",
     "BB_WINDOW",
@@ -229,7 +231,8 @@ class TechnicalAnalyzer:
 
         Série curta ou indicador em aquecimento devolve `neutral()`.
         """
-        snapshot = compute_indicators(candles)
+        with measure_latency("technical_analysis"):
+            snapshot = compute_indicators(candles)
         if snapshot is None:
             return neutral()
 

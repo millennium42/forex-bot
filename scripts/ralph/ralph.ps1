@@ -29,13 +29,14 @@ $PromptFile = Join-Path $Root "scripts\ralph\prompt.md"
 $Prd        = Join-Path $Root "prd.json"
 $Progress   = Join-Path $Root "progress.txt"
 
-foreach ($cmd in @("git", "uv", "claude")) {
+foreach ($cmd in @("git", "uv", "claude", "npx")) {
     if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
         throw "'$cmd' nao encontrado no PATH."
     }
 }
 if (-not (Test-Path $Prd))        { throw "prd.json nao existe." }
 if (-not (Test-Path $PromptFile)) { throw "scripts\ralph\prompt.md nao existe." }
+if (-not (Test-Path "$Root\.claude-flow")) { Write-Host "Aviso: Ruflo nao inicializado! Recomenda-se rodar 'npx ruflo init'." }
 
 function Get-HistoriasAbertas {
     $prd = Get-Content $Prd -Raw | ConvertFrom-Json

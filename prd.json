@@ -95,7 +95,7 @@
         "decisao em {buy, sell, hold}",
         "confianca em [0,1]"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 9,
@@ -107,7 +107,7 @@
         "kill switch diario ativa em 5%",
         "um teste por regra"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 10,
@@ -117,7 +117,7 @@
         "segunda chamada com mesmo client_request_id nao duplica ordem",
         "toda ordem passa antes pelo risk_manager"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 11,
@@ -127,7 +127,7 @@
         "divergencia gera registro em audit_log",
         "intervalo configuravel"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 12,
@@ -137,7 +137,7 @@
         "outcome referencia o signal originador",
         "pnl e duracao persistidos"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 13,
@@ -147,7 +147,7 @@
         "nova versao nunca sobrescreve a anterior",
         "rollback para versao anterior funciona"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 14,
@@ -157,7 +157,7 @@
         "sem branch de codigo especifico de teste no pipeline",
         "metricas de saida iguais as do promotion gate"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 15,
@@ -168,7 +168,7 @@
         "minimo de 200 trades exigido",
         "passar nos gates nao promove sozinho"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 16,
@@ -178,7 +178,7 @@
         "OpenAPI valido",
         "WS emite sinais e trades"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 17,
@@ -188,7 +188,7 @@
         "tsc --noEmit limpo",
         "eslint limpo"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 18,
@@ -198,7 +198,7 @@
         "reset apenas manual",
         "ambos gravam audit_log"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 19,
@@ -208,7 +208,7 @@
         "/health e /ready respondem",
         "latencia medida por estagio"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 20,
@@ -219,7 +219,7 @@
         "testes de falha de rede passam",
         "P0 = 0 e P1 = 0"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }

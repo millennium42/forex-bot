@@ -15,7 +15,19 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 5 — Twitter collector | ✅ |
 | 6 — Sentiment analyzer | ✅ |
 | 7 — Technical analyzer | ✅ |
-| 8–20 | ⏳ pendentes |
+| 8 — Signal fusion | ✅ |
+| 9 — Risk manager | ✅ |
+| 10 — Order manager | ✅ |
+| 11 — Position tracker | ✅ |
+| 12 — Outcome recorder | ✅ |
+| 13 — Weight optimizer | ✅ |
+| 14 — Backtester | ✅ |
+| 15 — Promotion gate | ✅ |
+| 16 — API FastAPI | ✅ |
+| 17 — Dashboard Next.js | ✅ |
+| 18 — Kill switch | ✅ |
+| 19 — Observabilidade | ✅ |
+| 20 — Hardening | ✅ |
 
 ---
 
@@ -128,3 +140,9 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   Postgres e Redis.
 - **O job `frontend` do CI só nasce na história 17**, junto com o diretório. Job que não tem o que
   rodar é ruído.
+- **Ralph + Ruflo:** O Ralph Loop (`scripts/ralph/ralph.ps1`) itera pelas histórias pendentes. O agente (Claude) foi instruído a usar ferramentas e swarms do Ruflo para auxiliar nas tarefas complexas, mas o Ruflo e o Ralph não anulam as invariantes de fail-closed e rulesets exigidos no projeto. Se a instalação do Ruflo via `npx` falhar por limites de memória, recomenda-se instalar os plugins no Claude.
+- **Mypy e SQLAlchemy Models em Testes:** Em testes, afirmar  ssert obj.atributo is True estreita o tipo (narrowing) para Literal[True]. Se uma funcao atualiza o banco e desativa o atributo, o mypy vai reclamar de 'unreachable code' em qualquer codigo apos  ssert not obj.atributo se voce nao limpar a hipotese do compilador. Faca session.refresh(obj) antes do assert reverso.
+- **PowerShell em scripts npm/npx:** Evite usar `&&` em execuções de PowerShell (como no `run_command` do Windows). Use `;` ou os divida em etapas.
+- **Next.js e Recharts:** Cuidado com regras de eslint como `react-hooks/set-state-in-effect`. O uso de `useEffect` para marcar `mounted = true` pode conflitar se não anotado adequadamente ou caso haja separação clara de server/client.
+- **TestClient com SQLite In-Memory:** O SQLite in-memory cria um banco por conexão (thread). Para compartilhar a mesma instância em testes de API que usam TestClient (FastAPI spawns threads), use `create_engine` com `poolclass=StaticPool` e `connect_args={"check_same_thread": False}`.
+- **Ruff B008 e FastAPI Depends:** O `ruff` acusa `B008` ao chamar funções como `Depends(get_db)` direto na assinatura da função. Para calar o alerta de forma cirúrgica num endpoint (como o `/ready`), adicione `# noqa: B008` na linha.

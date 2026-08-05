@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     # --- Observabilidade ----------------------------------------------------
     sentry_dsn: str | None = None
     log_level: str = "INFO"
+    position_tracker_interval_seconds: int = Field(default=60, gt=0)
 
     # ------------------------------------------------------------------ #
     @property
