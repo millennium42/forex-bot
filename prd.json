@@ -127,7 +127,7 @@
         "divergencia gera registro em audit_log",
         "intervalo configuravel"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 12,

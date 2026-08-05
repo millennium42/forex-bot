@@ -43,6 +43,7 @@ class FakeTerminal:
         self.login_calls = 0
         self.shutdown_calls = 0
         self.selected: list[str] = []
+        self._fail_select = False
 
     def initialize(self, *_args: Any, **_kwargs: Any) -> bool:
         self.initialize_calls += 1
@@ -76,28 +77,33 @@ class FakeTerminal:
     def symbol_info_tick(self, _symbol: str) -> Any:
         return self._tick
 
-    def symbol_select(self, symbol: str, _enable: bool) -> bool:
+    def symbol_select(self, symbol: str, enable: bool) -> bool:
+        if self._fail_select:
+            return False
         self.selected.append(symbol)
         return True
+
+    def positions_get(self) -> Any:
+        return ()
 
     def order_send(self, request: dict[str, Any]) -> Any:
         return SimpleNamespace(retcode=10009, order=123, deal=456, price=1.1, volume=0.1)
 
     @property
     def TRADE_ACTION_DEAL(self) -> int:
-        return 1  # noqa: N802
+        return 1
 
     @property
     def ORDER_TYPE_BUY(self) -> int:
-        return 0  # noqa: N802
+        return 0
 
     @property
     def ORDER_TYPE_SELL(self) -> int:
-        return 1  # noqa: N802
+        return 1
 
     @property
     def TRADE_RETCODE_DONE(self) -> int:
-        return 10009  # noqa: N802
+        return 10009
 
 
 def _settings(**kw: object) -> Settings:

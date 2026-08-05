@@ -18,7 +18,8 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 8 — Signal fusion | ✅ |
 | 9 — Risk manager | ✅ |
 | 10 — Order manager | ✅ |
-| 11–20 | ⏳ pendentes |
+| 11 — Position tracker | ✅ |
+| 12–20 | ⏳ pendentes |
 
 ---
 

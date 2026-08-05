@@ -48,6 +48,9 @@ class FakeTerminal:
     def symbol_select(self, symbol: str, enable: bool) -> bool:
         return True
 
+    def positions_get(self) -> Any:
+        return ()
+
     def order_send(self, request: dict[str, Any]) -> Any:
         self._action = request.get("action")
         self.last_order = request
