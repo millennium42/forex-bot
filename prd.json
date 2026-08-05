@@ -1,0 +1,225 @@
+{
+  "feature": "forex-trading-bot",
+  "branch": "feat/forex-bot",
+  "source": "tasks/prd-forex-bot.md",
+  "invariants": [
+    "TRADING_MODE=demo e o default e falha fechado",
+    "risk_manager e o unico caminho para uma ordem",
+    "audit_log e append-only",
+    "sem mocks em producao: MT5 offline para o sistema"
+  ],
+  "userStories": [
+    {
+      "id": 1,
+      "title": "Scaffold do repo",
+      "description": "Estrutura de pastas das 5 camadas, Docker Compose (postgres+redis), .env.example, pyproject, CI verde vazio.",
+      "acceptanceCriteria": [
+        "pytest executa sem falhas",
+        "ruff e mypy limpos",
+        "workflow de CI presente e valido",
+        ".env ignorado pelo git, .env.example versionado",
+        "config falha fechado para TRADING_MODE=demo"
+      ],
+      "passes": false
+    },
+    {
+      "id": 2,
+      "title": "Modelos + migrations",
+      "description": "Tabelas instruments, signals, trades, outcomes, audit_log com append-only garantido no banco.",
+      "acceptanceCriteria": [
+        "migration aplica e reverte",
+        "UPDATE e DELETE em audit_log falham",
+        "client_request_id unico em trades"
+      ],
+      "passes": false
+    },
+    {
+      "id": 3,
+      "title": "Conector MT5",
+      "description": "connect(), get_ticks(), get_account_info(); falha fechado se offline.",
+      "acceptanceCriteria": [
+        "erro explicito quando terminal offline",
+        "nenhum fallback simulado",
+        "retry com backoff exponencial"
+      ],
+      "passes": false
+    },
+    {
+      "id": 4,
+      "title": "News collector",
+      "description": "RSS/API para fila Celery, persistindo com dedupe por hash de URL.",
+      "acceptanceCriteria": [
+        "reprocessar mesma feed nao duplica linhas",
+        "hash de URL indexado unico"
+      ],
+      "passes": false
+    },
+    {
+      "id": 5,
+      "title": "Twitter collector",
+      "description": "Stream filtrado por cashtags/pares na mesma fila do news collector.",
+      "acceptanceCriteria": [
+        "dedupe por tweet id",
+        "mesma fila e mesmo schema de documento"
+      ],
+      "passes": false
+    },
+    {
+      "id": 6,
+      "title": "Sentiment analyzer",
+      "description": "Texto para score [-1,1] mais confianca, cacheado no Redis.",
+      "acceptanceCriteria": [
+        "score sempre em [-1,1]",
+        "cache hit nao reprocessa modelo",
+        "fallback TextBlob quando FinBERT indisponivel"
+      ],
+      "passes": false
+    },
+    {
+      "id": 7,
+      "title": "Technical analyzer",
+      "description": "OHLC para RSI, MACD, Bollinger, ATR e score normalizado.",
+      "acceptanceCriteria": [
+        "usa a lib ta, sem reimplementar indicador",
+        "score normalizado em [-1,1]",
+        "testado com series fixtures deterministicas"
+      ],
+      "passes": false
+    },
+    {
+      "id": 8,
+      "title": "Signal fusion",
+      "description": "Combina sentimento e tecnica com pesos versionados gerando decisao e confianca.",
+      "acceptanceCriteria": [
+        "versao do peso gravada na decisao",
+        "decisao em {buy, sell, hold}",
+        "confianca em [0,1]"
+      ],
+      "passes": false
+    },
+    {
+      "id": 9,
+      "title": "Risk manager",
+      "description": "Valida 1% por trade, 3% de exposicao, 5% de perda diaria, SL obrigatorio e regras FTMO.",
+      "acceptanceCriteria": [
+        "unico caminho para ordem",
+        "ordem sem SL e rejeitada",
+        "kill switch diario ativa em 5%",
+        "um teste por regra"
+      ],
+      "passes": false
+    },
+    {
+      "id": 10,
+      "title": "Order manager",
+      "description": "place, modify, close via MT5 com client_request_id idempotente.",
+      "acceptanceCriteria": [
+        "segunda chamada com mesmo client_request_id nao duplica ordem",
+        "toda ordem passa antes pelo risk_manager"
+      ],
+      "passes": false
+    },
+    {
+      "id": 11,
+      "title": "Position tracker",
+      "description": "Reconcilia posicoes MT5 versus banco a cada N segundos.",
+      "acceptanceCriteria": [
+        "divergencia gera registro em audit_log",
+        "intervalo configuravel"
+      ],
+      "passes": false
+    },
+    {
+      "id": 12,
+      "title": "Outcome recorder",
+      "description": "Trade encerrado grava resultado real versus previsao.",
+      "acceptanceCriteria": [
+        "outcome referencia o signal originador",
+        "pnl e duracao persistidos"
+      ],
+      "passes": false
+    },
+    {
+      "id": 13,
+      "title": "Weight optimizer",
+      "description": "Ajusta pesos do signal fusion a partir dos outcomes, versionado e reversivel.",
+      "acceptanceCriteria": [
+        "nova versao nunca sobrescreve a anterior",
+        "rollback para versao anterior funciona"
+      ],
+      "passes": false
+    },
+    {
+      "id": 14,
+      "title": "Backtester",
+      "description": "Replay de historico MT5 com o mesmo pipeline de decisao do live.",
+      "acceptanceCriteria": [
+        "sem branch de codigo especifico de teste no pipeline",
+        "metricas de saida iguais as do promotion gate"
+      ],
+      "passes": false
+    },
+    {
+      "id": 15,
+      "title": "Promotion gate",
+      "description": "Cinco criterios de promocao demo para real mais endpoint de status.",
+      "acceptanceCriteria": [
+        "teste unitario por criterio",
+        "minimo de 200 trades exigido",
+        "passar nos gates nao promove sozinho"
+      ],
+      "passes": false
+    },
+    {
+      "id": 16,
+      "title": "API FastAPI",
+      "description": "REST mais WebSocket de eventos ao vivo.",
+      "acceptanceCriteria": [
+        "OpenAPI valido",
+        "WS emite sinais e trades"
+      ],
+      "passes": false
+    },
+    {
+      "id": 17,
+      "title": "Dashboard Next.js",
+      "description": "Equity curve, trades abertos, sinais recentes e status dos gates.",
+      "acceptanceCriteria": [
+        "tsc --noEmit limpo",
+        "eslint limpo"
+      ],
+      "passes": false
+    },
+    {
+      "id": 18,
+      "title": "Kill switch",
+      "description": "Manual via endpoint e automatico por perda diaria, ambos auditados.",
+      "acceptanceCriteria": [
+        "reset apenas manual",
+        "ambos gravam audit_log"
+      ],
+      "passes": false
+    },
+    {
+      "id": 19,
+      "title": "Observabilidade",
+      "description": "Sentry, health checks e metricas de latencia do pipeline.",
+      "acceptanceCriteria": [
+        "/health e /ready respondem",
+        "latencia medida por estagio"
+      ],
+      "passes": false
+    },
+    {
+      "id": 20,
+      "title": "Hardening",
+      "description": "Rate limits, retry/backoff MT5, testes de falha de rede, coverage global maior ou igual a 80%.",
+      "acceptanceCriteria": [
+        "coverage global >= 80%",
+        "testes de falha de rede passam",
+        "P0 = 0 e P1 = 0"
+      ],
+      "passes": false
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+## Aprendizados (append-only — nunca editar linha anterior)
+
+[2026-08-04] História 1 — Scaffold
+- Ambiente de dev: Windows 10, sem Docker, `python` do PATH é o stub da Windows Store.
+  Python 3.12.13 instalado via `uv python install 3.12`. Todo comando roda por `uv run`.
+- `MetaTrader5` é win32-only. Resolvido com marker `sys_platform == 'win32'` no pyproject,
+  para o CI em Ubuntu não quebrar na resolução de dependências.
+- `transformers`+`torch` movidos para o extra `nlp`: ~2GB não pertence ao caminho crítico do CI.
+- O fail-closed do trading mode ficou como propriedade derivada (`effective_trading_mode`), não
+  como validador do campo. Motivo: um validador que rejeita valor inválido derruba o processo no
+  boot; a propriedade derivada degrada para demo, que é o comportamento seguro desejado.
+  Exige duas condições independentes (`TRADING_MODE=real` + `REAL_TRADING_UNLOCKED=true`) para
+  que um typo em uma variável de ambiente jamais habilite conta real.
+- API/workers ficam fora de container: o conector MT5 exige terminal nativo no mesmo host.

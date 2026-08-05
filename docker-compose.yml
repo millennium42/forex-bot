@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: forex
+      POSTGRES_PASSWORD: forex
+      POSTGRES_DB: forex_bot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U forex -d forex_bot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:
+
+# NOTA: a API e os workers Celery rodam no host, não em container.
+# O conector MT5 exige o terminal MetaTrader 5 nativo (Windows) no mesmo host,
+# via socket 127.0.0.1 — containerizar o bot quebraria esse acesso.
+# Compose aqui é só a infraestrutura de estado (Postgres + Redis).
