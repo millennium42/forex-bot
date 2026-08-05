@@ -51,6 +51,9 @@ class MT5Terminal(Protocol):
     def symbol_select(self, symbol: str, enable: bool) -> bool: ...
     def order_send(self, request: dict[str, Any]) -> Any: ...
     def positions_get(self) -> Any: ...
+    def copy_rates_from_pos(
+        self, symbol: str, timeframe: int, start_pos: int, count: int
+    ) -> Any: ...
 
     @property
     def TRADE_ACTION_DEAL(self) -> int: ...  # noqa: N802
@@ -300,6 +303,26 @@ class MT5Client:
             )
             for p in raw_positions
         ]
+
+    @retry(
+        retry=retry_if_exception_type(MT5ConnectionError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        reraise=True,
+    )
+    def get_candles(self, symbol: str, timeframe: int, count: int) -> Any:
+        """Busca histórico OHLC (Velás) de um símbolo como DataFrame pandas."""
+        self._assert_conectado()
+        import pandas as pd
+
+        raw_rates = self.terminal.copy_rates_from_pos(symbol, timeframe, 0, count)
+        if raw_rates is None or len(raw_rates) == 0:
+            raise MT5ConnectionError(f"copy_rates_from_pos({symbol}) vazio: {self._erro()}")
+
+        df = pd.DataFrame(raw_rates)
+        if "time" in df.columns:
+            df["time"] = pd.to_datetime(df["time"], unit="s")
+        return df
 
     # -- context manager ----------------------------------------------------
     def __enter__(self) -> MT5Client:

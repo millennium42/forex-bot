@@ -44,6 +44,7 @@ class FakeTerminal:
         self.shutdown_calls = 0
         self.selected: list[str] = []
         self._fail_select = False
+        self._rates: Any = None
 
     def initialize(self, *_args: Any, **_kwargs: Any) -> bool:
         self.initialize_calls += 1
@@ -88,6 +89,9 @@ class FakeTerminal:
 
     def order_send(self, request: dict[str, Any]) -> Any:
         return SimpleNamespace(retcode=10009, order=123, deal=456, price=1.1, volume=0.1)
+
+    def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int) -> Any:
+        return self._rates
 
     @property
     def TRADE_ACTION_DEAL(self) -> int:  # noqa: N802

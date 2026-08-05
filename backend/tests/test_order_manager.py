@@ -51,6 +51,9 @@ class FakeTerminal:
     def positions_get(self) -> Any:
         return ()
 
+    def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int) -> Any:
+        return None
+
     def order_send(self, request: dict[str, Any]) -> Any:
         self._action = request.get("action")
         self.last_order = request
