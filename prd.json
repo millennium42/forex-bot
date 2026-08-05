@@ -73,7 +73,7 @@
         "cache hit nao reprocessa modelo",
         "fallback TextBlob quando FinBERT indisponivel"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 7,

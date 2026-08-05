@@ -99,3 +99,34 @@
     app.amqp.router.route({}, nome)["queue"].name - nao abre conexao com o broker.
   - Token so vive no header do client (build_client). Nenhum log recebe credencial.
 ---
+## [2026-08-05] - Historia 6: Sentiment analyzer
+- backend/analysis/sentiment_analyzer.py (SentimentScore, FinBertBackend, TextBlobBackend,
+  load_backend, cache Redis, SentimentAnalyzer), backend/tests/test_sentiment_analyzer.py,
+  `transformers.*` adicionado aos overrides de mypy no pyproject.
+- **Aprendizados:**
+  - Mesma forma do MT5Terminal para dependencia pesada: Protocol na assinatura + import dentro
+    de `_load_finbert_pipeline` / `_load_textblob`. O teste faz monkeypatch do loader, entao o CI
+    nunca baixa o modelo de 400MB nem exige o extra `nlp` instalado.
+  - O clamp mora no `__post_init__` do SentimentScore, nao no chamador. Assim a faixa [-1,1] vale
+    tambem para o que volta do cache - entrada adulterada no Redis nao vira score fora de faixa.
+  - Chave de cache = `sentiment:v1:<engine>:<sha256 do texto normalizado>`. O engine no meio evita
+    servir score do FinBERT para uma sessao rodando TextBlob; a normalizacao de espacos faz a
+    mesma noticia, formatada diferente por fonte, cair na mesma entrada.
+  - Cache e best-effort (padrao dos coletores, nao do MT5): excecao do Redis vira warning e o
+    modelo recalcula. Cache e otimizacao; nao pode derrubar analise.
+  - Confianca do FinBERT = probabilidade da classe vencedora, inclusive para `neutral` (mede
+    quanta certeza ha de que nao ha direcao). No TextBlob nao existe probabilidade: usei
+    |polarity|, unica medida de conviccao disponivel.
+  - Rotulo desconhecido, texto vazio e cache corrompido devolvem `neutral()` = score 0 com
+    confianca 0. Nunca um score inventado - o fusion pondera pela confianca, entao o sinal
+    simplesmente nao pesa. Nao conflita com "sem mocks em producao": o que nao pode ser
+    fabricado e preco.
+  - RUF100 do ruff pega `# noqa: BLE001` como noqa inutil, porque BLE nao esta no select. E
+    RUF002 barra `x` unicode (MULTIPLICATION SIGN) em docstring - acento comum passa, simbolo
+    matematico nao.
+  - Teste `integration` que grava no Redis precisa de chave unica por execucao (uuid4 no texto).
+    Com chave fixa + TTL de 30s, a segunda rodada da suite le a entrada da primeira e a asserção
+    "modelo chamado uma vez" vira falso positivo.
+  - 170 testes, coverage 94% (97% no modulo novo). As unicas linhas descobertas sao os imports
+    reais de transformers/textblob, ausentes nesta maquina e no CI.
+---
