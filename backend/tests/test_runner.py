@@ -56,12 +56,14 @@ class FakeTerminal:
         retcode: int | None = 10009,
         equity: float = 100_000.0,
         candle_rows: list[dict[str, float]] | None = None,
+        volume_min: float = 0.01,
     ) -> None:
         self.positions = positions
         self._tick = tick or SimpleNamespace(time=1_700_000_000, bid=1.0850, ask=1.0852)
         self.retcode = retcode
         self.equity = equity
         self.candle_rows = candle_rows
+        self.volume_min = volume_min
         self.last_order: dict[str, Any] | None = None
 
     def initialize(self, *_args: Any, **_kwargs: Any) -> bool:
@@ -91,6 +93,9 @@ class FakeTerminal:
 
     def symbol_info_tick(self, _symbol: str) -> Any:
         return self._tick
+
+    def symbol_info(self, _symbol: str) -> Any:
+        return SimpleNamespace(volume_min=self.volume_min)
 
     def symbol_select(self, _symbol: str, _enable: bool) -> bool:
         return True
@@ -209,6 +214,20 @@ def test_executar_stop_loss_nao_e_constante_entre_atrs_diferentes(session: Sessi
     trades = session.execute(select(Trade).order_by(Trade.id)).scalars().all()
     assert len(trades) == 2
     assert trades[0].stop_loss != trades[1].stop_loss
+
+
+# -- lote mínimo vem do broker por símbolo (história 23) ---------------------
+
+
+def test_executar_usa_volume_minimo_do_broker(session: Session) -> None:
+    runner = _runner()
+    client = _client(FakeTerminal(volume_min=0.05))
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    assert trade.volume == pytest.approx(0.05)
 
 
 # -- idempotência com granularidade de minuto (AC4) --------------------------
@@ -368,10 +387,33 @@ def test_run_cycle_erro_generico_nao_interrompe_outros_simbolos(
 
 
 def test_get_or_create_instrument_reaproveita_instrumento_existente(session: Session) -> None:
-    primeiro = BotRunner._get_or_create_instrument(session, "EURUSD")
-    segundo = BotRunner._get_or_create_instrument(session, "EURUSD")
+    client = _client()
+    primeiro = BotRunner._get_or_create_instrument(session, "EURUSD", client)
+    segundo = BotRunner._get_or_create_instrument(session, "EURUSD", client)
 
     assert primeiro.id == segundo.id
+    assert len(session.execute(select(Instrument)).scalars().all()) == 1
+
+
+def test_get_or_create_instrument_le_volume_minimo_do_broker(session: Session) -> None:
+    """História 23: lote mínimo vem do broker por símbolo, não de uma constante."""
+    client = _client(FakeTerminal(volume_min=0.25))
+
+    instrumento = BotRunner._get_or_create_instrument(session, "XAUUSD", client)
+
+    assert instrumento.min_volume == pytest.approx(0.25)
+
+
+def test_get_or_create_instrument_atualiza_volume_minimo_quando_broker_muda(
+    session: Session,
+) -> None:
+    client_antigo = _client(FakeTerminal(volume_min=0.01))
+    BotRunner._get_or_create_instrument(session, "EURUSD", client_antigo)
+
+    client_novo = _client(FakeTerminal(volume_min=0.5))
+    instrumento = BotRunner._get_or_create_instrument(session, "EURUSD", client_novo)
+
+    assert instrumento.min_volume == pytest.approx(0.5)
     assert len(session.execute(select(Instrument)).scalars().all()) == 1
 
 

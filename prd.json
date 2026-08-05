@@ -262,7 +262,7 @@
         "coluna min_volume em instruments com migration aditiva",
         "volume abaixo do minimo do broker e rejeitado antes de enviar"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }

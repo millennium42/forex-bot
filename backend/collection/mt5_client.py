@@ -48,6 +48,7 @@ class MT5Terminal(Protocol):
     def last_error(self) -> tuple[int, str]: ...
     def account_info(self) -> Any: ...
     def symbol_info_tick(self, symbol: str) -> Any: ...
+    def symbol_info(self, symbol: str) -> Any: ...
     def symbol_select(self, symbol: str, enable: bool) -> bool: ...
     def order_send(self, request: dict[str, Any]) -> Any: ...
     def positions_get(self) -> Any: ...
@@ -97,6 +98,12 @@ class Tick:
     @property
     def mid(self) -> float:
         return (self.bid + self.ask) / 2
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolInfo:
+    symbol: str
+    volume_min: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +269,29 @@ class MT5Client:
             bid=bid,
             ask=ask,
         )
+
+    @retry(
+        retry=retry_if_exception_type(MT5ConnectionError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
+        reraise=True,
+    )
+    def get_symbol_info(self, symbol: str) -> SymbolInfo:
+        """Metadados do símbolo no broker. Hoje só o lote mínimo negociável.
+
+        Sem fallback para 0.01: um broker que exige mais que o padrão e não
+        respondeu é ausência de informação, não "aceita o mínimo comum".
+        """
+        self._assert_conectado()
+        raw = self.terminal.symbol_info(symbol)
+        if raw is None:
+            raise MT5ConnectionError(f"symbol_info({symbol}) vazio: {self._erro()}")
+
+        volume_min = float(raw.volume_min)
+        if volume_min <= 0:
+            raise MT5ConnectionError(f"volume_min inválido para {symbol}: {volume_min}")
+
+        return SymbolInfo(symbol=symbol, volume_min=volume_min)
 
     def get_ticks(self, symbols: list[str]) -> dict[str, Tick]:
         """Ticks de vários símbolos. Falha inteira se qualquer um falhar.

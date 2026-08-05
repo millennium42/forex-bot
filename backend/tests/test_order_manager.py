@@ -45,6 +45,9 @@ class FakeTerminal:
     def symbol_info_tick(self, symbol: str) -> None:
         return None
 
+    def symbol_info(self, symbol: str) -> None:
+        return None
+
     def symbol_select(self, symbol: str, enable: bool) -> bool:
         return True
 

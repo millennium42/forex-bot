@@ -13,6 +13,12 @@
 - `monkeypatch.setattr(modulo, "time", ...)` quebra o mypy strict quando "time" e so um
   `import time` no topo do modulo (nao reexportado). Importe `time` no proprio teste e mocke
   `time.sleep` ali - mesmo objeto de modulo, mesmo efeito, sem acessar atributo nao reexportado.
+- Coluna NOT NULL nova em tabela com dados existentes: `server_default` na migration de criacao,
+  depois `op.alter_column(..., server_default=None)` para nao deixar o default preso no schema -
+  o default de verdade fica so no `mapped_column(default=...)` do lado Python.
+- `MT5Terminal` e um Protocol estrutural: metodo novo no Protocol exige atualizar TODO FakeTerminal
+  usado como `terminal=` em teste, senao o mypy strict rejeita a injecao (exceto onde o dublê ja
+  tem `# type: ignore` deliberado).
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -356,4 +362,32 @@
   - Conta demo real conectada durante o teste (MetaQuotes-Demo, equity ainda ~19 USD, mesma
     situação registrada na revisão pós-Ralph anterior): confirma que os endpoints novos leem o
     banco de verdade, não inventam número.
+---
+
+## [2026-08-05] — História 23: Lote mínimo por símbolo
+- O runner substituiu a constante `VOLUME_MINIMO = 0.01` por `instrument.min_volume`, lido do
+  broker via `MT5Client.get_symbol_info(symbol).volume_min` a cada chamada de
+  `_get_or_create_instrument` (não só na criação — o broker é a fonte de verdade, o registro local
+  sincroniza).
+- `risk_manager.validate_order` ganhou uma checagem: `OrderRequest.min_volume` (novo campo
+  opcional) rejeita a ordem antes de qualquer envio ao MT5 se `volume < min_volume`. Continua
+  sendo o único caminho para uma ordem — a checagem de lote mínimo entra no mesmo gate que já
+  valida SL, risco por trade e exposição.
+- Arquivos alterados: `backend/collection/mt5_client.py` (Protocol + `SymbolInfo` + `get_symbol_info`),
+  `backend/models/instrument.py` (coluna `min_volume`), `backend/execution/risk_manager.py`
+  (`OrderRequest.min_volume` + validação), `backend/execution/runner.py`,
+  `backend/migrations/versions/3514d21f36b7_add_instrument_min_volume.py`, testes correspondentes
+  em `backend/tests/`.
+- **Aprendizados para as próximas iterações:**
+  - `get_symbol_info` segue o mesmo formato de `get_tick`: retry com backoff, `_assert_conectado`,
+    erro explícito (nunca fallback) se o broker não responde ou devolve `volume_min <= 0`.
+  - Migration `NOT NULL` aditiva sobre tabela com linhas existentes precisa de `server_default` na
+    criação da coluna — sem isso `alembic upgrade` falha em ambiente com dado real. Removido depois
+    com `alter_column(server_default=None)` para não duplicar a fonte do default (Python já tem).
+  - Teste de banco com `INSERT` cru (`test_migrations.py`) não recebe default do ORM — precisou
+    listar a coluna nova explicitamente, como as demais colunas `NOT NULL` da tabela.
+  - Adicionar método ao `MT5Terminal` Protocol é uma mudança que se propaga: todo `FakeTerminal`
+    passado como `terminal=` em teste (três arquivos) precisou do método novo para o mypy strict
+    aceitar a injeção.
+---
 ---

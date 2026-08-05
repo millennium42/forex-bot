@@ -30,6 +30,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 20 — Hardening | ✅ |
 | 21 — Testes do BotRunner | ✅ |
 | 22 — Dashboard rico | ✅ |
+| 23 — Lote mínimo por símbolo | ✅ |
 
 ---
 
@@ -66,6 +67,15 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   par volátil dominaria o score só por oscilar mais.
 - **Pesos de combinação vivem só no `signal_fusion` (história 8).** O `technical_analyzer` usa
   pesos fixos e iguais de propósito — dois lugares versionando peso seriam duas fontes de verdade.
+- **Metadado de broker por símbolo (`Instrument`) é sincronizado no ponto de uso, não só na
+  criação.** `_get_or_create_instrument` (história 23) chama `client.get_symbol_info(symbol)` a
+  cada ciclo e atualiza `min_volume` se o broker mudou — o registro local nunca fica desatualizado
+  em relação a quem manda de verdade. Vale como padrão para qualquer outro campo de `Instrument`
+  que venha do MT5 no futuro (contract_size, digits, point).
+- **`OrderRequest` aceita campos de contexto opcionais (`min_volume: float | None = None`) para o
+  `risk_manager` validar sem quebrar quem já constrói a request sem esse dado.** `None` pula a
+  checagem em vez de rejeitar por um valor que ninguém informou — mesma filosofia de
+  "ausência de informação não vira decisão", aplicada a validação de risco.
 
 ---
 
@@ -133,6 +143,19 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   para venda e pode vencer o MACD (momento) dependendo da confiança relativa. Teste de integração
   ponta-a-ponta (candles → ordem) não deve fixar a direção esperada; fixe amplitude pequena (ATR
   baixo, cabe no limite de 1% de risco) e valide só que a ordem foi criada, não o lado.
+- **Coluna `NOT NULL` nova numa tabela com dados existentes: `server_default` na criação, depois
+  `op.alter_column(..., server_default=None)` para não deixar o default no schema permanentemente**
+  (o default "de verdade" já mora no `mapped_column(default=...)` do lado Python). Sem isso, testes
+  que fazem `INSERT` via SQL cru (bypassando o ORM) quebram por `NotNullViolation` — teste que
+  insere `instruments` direto por `text()` precisa listar a coluna nova explicitamente, como já
+  fazia com `contract_size`.
+- **`MT5Terminal` é um `Protocol` estrutural: todo dublê usado como `terminal=` num teste precisa
+  ganhar o método novo quando o Protocol cresce**, senão o mypy strict rejeita a injeção (ou, se o
+  dublê tem `# type: ignore` na criação do `MT5Client`, o teste passa mas o comportamento faltante
+  quebra em runtime se o código exercitar aquele método). Adicionar `symbol_info` ao Protocol
+  (história 23) exigiu atualizar os `FakeTerminal` de `test_mt5_client.py`, `test_runner.py` e
+  `test_order_manager.py` — `test_position_tracker.py` ficou de fora porque seu dublê já usa
+  `# type: ignore` e não invoca esse caminho.
 
 ---
 
