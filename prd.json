@@ -20,7 +20,7 @@
         ".env ignorado pelo git, .env.example versionado",
         "config falha fechado para TRADING_MODE=demo"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 2,
