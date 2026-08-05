@@ -144,6 +144,50 @@ def test_risk_manager_ftmo_daily_loss(
         )
 
 
+def test_risk_manager_rejects_volume_below_broker_minimum(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    req = OrderRequest(
+        symbol=valid_request.symbol,
+        side=valid_request.side,
+        volume=0.01,
+        price=valid_request.price,
+        stop_loss=valid_request.stop_loss,
+        take_profit=valid_request.take_profit,
+        min_volume=0.1,
+    )
+    with pytest.raises(RiskValidationError, match="abaixo do mínimo do broker"):
+        risk_manager.validate_order(
+            request=req,
+            equity=10000.0,
+            daily_loss=0.0,
+            current_exposure=0.0,
+            trade_monetary_risk=50.0,
+        )
+
+
+def test_risk_manager_accepts_volume_equal_to_broker_minimum(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    req = OrderRequest(
+        symbol=valid_request.symbol,
+        side=valid_request.side,
+        volume=0.1,
+        price=valid_request.price,
+        stop_loss=valid_request.stop_loss,
+        take_profit=valid_request.take_profit,
+        min_volume=0.1,
+    )
+    risk_manager.validate_order(
+        request=req,
+        equity=10000.0,
+        daily_loss=0.0,
+        current_exposure=0.0,
+        trade_monetary_risk=50.0,
+    )
+    # Não deve levantar exceção
+
+
 def test_risk_manager_kill_switch_active(
     risk_manager: RiskManager, valid_request: OrderRequest
 ) -> None:

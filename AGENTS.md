@@ -28,6 +28,9 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 18 — Kill switch | ✅ |
 | 19 — Observabilidade | ✅ |
 | 20 — Hardening | ✅ |
+| 21 — Testes do BotRunner | ✅ |
+| 22 — Dashboard rico | ✅ |
+| 23 — Lote mínimo por símbolo | ✅ |
 
 ---
 
@@ -64,6 +67,15 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   par volátil dominaria o score só por oscilar mais.
 - **Pesos de combinação vivem só no `signal_fusion` (história 8).** O `technical_analyzer` usa
   pesos fixos e iguais de propósito — dois lugares versionando peso seriam duas fontes de verdade.
+- **Metadado de broker por símbolo (`Instrument`) é sincronizado no ponto de uso, não só na
+  criação.** `_get_or_create_instrument` (história 23) chama `client.get_symbol_info(symbol)` a
+  cada ciclo e atualiza `min_volume` se o broker mudou — o registro local nunca fica desatualizado
+  em relação a quem manda de verdade. Vale como padrão para qualquer outro campo de `Instrument`
+  que venha do MT5 no futuro (contract_size, digits, point).
+- **`OrderRequest` aceita campos de contexto opcionais (`min_volume: float | None = None`) para o
+  `risk_manager` validar sem quebrar quem já constrói a request sem esse dado.** `None` pula a
+  checagem em vez de rejeitar por um valor que ninguém informou — mesma filosofia de
+  "ausência de informação não vira decisão", aplicada a validação de risco.
 
 ---
 
@@ -118,6 +130,32 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `warn_unreachable` acusa o corpo do `if` — use `math.isnan` para checar NaN de escalar.
 - Série OHLC constante deixa o **RSI indefinido** (nem ganho, nem perda → NaN). Fixture de teste
   "plana" não exercita o caminho feliz dos indicadores; exercita o caminho de NaN.
+- **Congelar `datetime.now()` em teste, sob mypy strict:** o `@classmethod now(cls, tz=None)`
+  precisa devolver `cls(...)`, não `datetime(...)` — devolver o tipo base quebra o `override`
+  (`Return type "datetime" incompatible with return type "FixedDatetime" in supertype`).
+- **`monkeypatch.setattr(modulo, "time", ...)` (ou qualquer nome só `import`ado no topo do
+  módulo, sem estar em `__all__`) quebra o mypy strict com `does not explicitly export attribute`.**
+  Para mockar `time.sleep` chamado de dentro de outro módulo, importe `time` no próprio teste e
+  faça `monkeypatch.setattr(time, "sleep", ...)` — é o mesmo objeto de módulo, então o efeito é
+  idêntico sem acessar o atributo pelo caminho não reexportado.
+- **RSI e Bollinger no `technical_analyzer` são reversão à média, não seguem tendência.** Uma
+  série de candles em alta forte não garante `Direction.BUY` na fusão — o RSI sobrecomprado puxa
+  para venda e pode vencer o MACD (momento) dependendo da confiança relativa. Teste de integração
+  ponta-a-ponta (candles → ordem) não deve fixar a direção esperada; fixe amplitude pequena (ATR
+  baixo, cabe no limite de 1% de risco) e valide só que a ordem foi criada, não o lado.
+- **Coluna `NOT NULL` nova numa tabela com dados existentes: `server_default` na criação, depois
+  `op.alter_column(..., server_default=None)` para não deixar o default no schema permanentemente**
+  (o default "de verdade" já mora no `mapped_column(default=...)` do lado Python). Sem isso, testes
+  que fazem `INSERT` via SQL cru (bypassando o ORM) quebram por `NotNullViolation` — teste que
+  insere `instruments` direto por `text()` precisa listar a coluna nova explicitamente, como já
+  fazia com `contract_size`.
+- **`MT5Terminal` é um `Protocol` estrutural: todo dublê usado como `terminal=` num teste precisa
+  ganhar o método novo quando o Protocol cresce**, senão o mypy strict rejeita a injeção (ou, se o
+  dublê tem `# type: ignore` na criação do `MT5Client`, o teste passa mas o comportamento faltante
+  quebra em runtime se o código exercitar aquele método). Adicionar `symbol_info` ao Protocol
+  (história 23) exigiu atualizar os `FakeTerminal` de `test_mt5_client.py`, `test_runner.py` e
+  `test_order_manager.py` — `test_position_tracker.py` ficou de fora porque seu dublê já usa
+  `# type: ignore` e não invoca esse caminho.
 
 ---
 
@@ -130,6 +168,9 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | Histórias e critérios | `prd.json` / `tasks/prd-forex-bot.md` |
 | Infra de estado | `docker-compose.yml` (só Postgres + Redis) |
 | CI | `.github/workflows/ci.yml` |
+| Endpoints do dashboard | `backend/api/routers/{trades,signals,audit,promotion}.py` |
+| Componentes do dashboard | `frontend/src/components/{charts,modals,tabs}/` |
+| Fetchers + tipos do frontend | `frontend/src/lib/api.ts` |
 
 ---
 
@@ -146,3 +187,10 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 - **Next.js e Recharts:** Cuidado com regras de eslint como `react-hooks/set-state-in-effect`. O uso de `useEffect` para marcar `mounted = true` pode conflitar se não anotado adequadamente ou caso haja separação clara de server/client.
 - **TestClient com SQLite In-Memory:** O SQLite in-memory cria um banco por conexão (thread). Para compartilhar a mesma instância em testes de API que usam TestClient (FastAPI spawns threads), use `create_engine` com `poolclass=StaticPool` e `connect_args={"check_same_thread": False}`.
 - **Ruff B008 e FastAPI Depends:** O `ruff` acusa `B008` ao chamar funções como `Depends(get_db)` direto na assinatura da função. Para calar o alerta de forma cirúrgica num endpoint (como o `/ready`), adicione `# noqa: B008` na linha.
+- **Modelos sem `relationship()` é deliberado.** `Trade`, `Signal`, `Outcome`, `Instrument` só têm FK (`instrument_id`, `signal_id`, `trade_id`), nunca `relationship()`. Endpoint que precisa juntar tabelas (ex: `/trades/history`) faz `db.query(Trade, Instrument.symbol, Signal, Outcome).join(...).outerjoin(...)` explícito em vez de navegar atributo. Ao adicionar endpoint novo que cruza tabelas, siga o mesmo padrão — não adicione `relationship()` só para um endpoint.
+- **React Compiler linta `useEffect` com rigor (Next 16 / React 19).** `eslint-plugin-react-hooks` acusa `react-hooks/set-state-in-effect` para qualquer `setState` (direto ou via função assíncrona) chamado dentro do corpo de um `useEffect`, e `react-hooks/purity` para `Date.now()`/`Math.random()`/`new Date()` sem argumento chamados durante o render (inclusive dentro de `useMemo`). Ambos são falsos positivos legítimos para fetch inicial de dados e filtro por janela de tempo — resolvido com `// eslint-disable-next-line <regra>` pontual, comentando o motivo. `new Date(isoString)` (com argumento) não é pego pela regra de pureza.
+- **Tailwind v4 dark mode por classe, não por media query.** `@custom-variant dark (&:where(.dark, .dark *));` no topo do `globals.css` + toggle de `.dark` no `<html>` via JS. Tokens de cor ficam em `@theme inline` apontando para variáveis simples (`--background`, `--card`, etc.), redefinidas dentro de `.dark { }` — é o padrão que o shadcn/ui usa para Tailwind v4, permite `bg-card`, `text-fg-secondary` etc. funcionarem nos dois temas sem duplicar classe em todo componente. Script inline em `layout.tsx` aplica a classe antes do primeiro paint (evita flash); `suppressHydrationWarning` no `<html>`/`<body>` é obrigatório porque esse script roda fora do ciclo do React.
+- **Paleta de gráfico dedicada, não a paleta de marca.** Azul/roxo da marca (`--color-primary`/`--color-accent`) falha o validador da skill `dataviz` como par categórico (ΔE 1.3 deutan, 12.0 visão normal — abaixo do piso de 15). Séries de gráfico usam `frontend/src/lib/palette.ts`, validado com `node scripts/validate_palette.js` da skill contra as duas superfícies (clara/escura) deste app: azul/laranja para categórico, verde/vermelho (`good`/`critical`) reservados para estado (lucro/prejuízo), nunca reaproveitados como cor de série.
+- **Sem tabela de equity histórico.** O MT5 só devolve o equity atual, não série temporal. A curva de capital do dashboard é reconstruída de trás para frente: parte do equity atual e desconta o `pnl` de cada trade encerrado andando no tempo (`buildEquityCurve` em `EquityCurveChart.tsx`). É dado real, não interpolado — mas reinicia do zero a cada full reload porque não persiste estado entre sessões do navegador.
+- **Backend + frontend rodando localmente durante dev podem colidir com processo velho.** `netstat -ano | grep :PORTA` + `Get-CimInstance Win32_Process -Filter "ProcessId=X"` (PowerShell) identifica se a porta já está ocupada por um `uvicorn`/`next dev` de uma sessão anterior rodando código desatualizado (sem `--reload` no caso do uvicorn). `next dev` faz Fast Refresh sozinho ao detectar mudança de arquivo; `uvicorn` sem `--reload` não — precisa matar e subir de novo para refletir edição.
+- **Verificação visual sem `chromium-cli` disponível:** `npx --yes -p playwright playwright install chromium` baixa o browser; o script de verificação não pode rodar com `node script.js` direto (o módulo `playwright` não resolve fora de um projeto que o declara) — descubra o cache do npx (`npm config get cache`, pasta `_npx/<hash>/node_modules`) e exporte `NODE_PATH` apontando pra lá antes de rodar `node script.js`.

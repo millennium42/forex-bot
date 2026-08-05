@@ -29,6 +29,7 @@ class FakeTerminal:
         trade_mode: int = MT5_TRADE_MODE_DEMO,
         tick: Any = None,
         account: Any = "default",
+        symbol_info: Any = "default",
     ) -> None:
         self.initialize_ok = initialize_ok
         self.login_ok = login_ok
@@ -39,6 +40,7 @@ class FakeTerminal:
             else SimpleNamespace(time=1_700_000_000, bid=1.0850, ask=1.0852)
         )
         self._account = account
+        self._symbol_info = symbol_info
         self.initialize_calls = 0
         self.login_calls = 0
         self.shutdown_calls = 0
@@ -77,6 +79,11 @@ class FakeTerminal:
 
     def symbol_info_tick(self, _symbol: str) -> Any:
         return self._tick
+
+    def symbol_info(self, _symbol: str) -> Any:
+        if self._symbol_info != "default":
+            return self._symbol_info
+        return SimpleNamespace(volume_min=0.01)
 
     def symbol_select(self, symbol: str, enable: bool) -> bool:
         if self._fail_select:
@@ -245,6 +252,42 @@ def test_get_ticks_devolve_mapa_por_simbolo() -> None:
 
     assert set(ticks) == {"EURUSD", "GBPUSD"}
     assert ticks["EURUSD"].symbol == "EURUSD"
+
+
+# --- lote mínimo por símbolo (história 23) ---------------------------------
+def test_get_symbol_info_exige_conexao() -> None:
+    with pytest.raises(MT5ConnectionError, match="não conectado"):
+        _client(FakeTerminal()).get_symbol_info("EURUSD")
+
+
+def test_get_symbol_info_devolve_volume_min_do_broker() -> None:
+    terminal = FakeTerminal(symbol_info=SimpleNamespace(volume_min=0.1))
+    client = _client(terminal)
+    client.connect()
+
+    info = client.get_symbol_info("EURUSD")
+
+    assert info.symbol == "EURUSD"
+    assert info.volume_min == pytest.approx(0.1)
+
+
+def test_get_symbol_info_ausente_levanta_erro() -> None:
+    """Broker que não respondeu é erro, não é o mínimo padrão assumido."""
+    terminal = FakeTerminal(symbol_info=None)
+    client = _client(terminal)
+    client.connect()
+
+    with pytest.raises(MT5ConnectionError, match="vazio"):
+        client.get_symbol_info("EURUSD")
+
+
+def test_get_symbol_info_com_volume_min_zero_e_rejeitado() -> None:
+    terminal = FakeTerminal(symbol_info=SimpleNamespace(volume_min=0.0))
+    client = _client(terminal)
+    client.connect()
+
+    with pytest.raises(MT5ConnectionError, match="inválido"):
+        client.get_symbol_info("EURUSD")
 
 
 def test_account_info_vazio_levanta_erro() -> None:

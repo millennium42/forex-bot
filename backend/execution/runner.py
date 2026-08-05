@@ -44,12 +44,6 @@ TIMEFRAME_M1 = 1
 # Candles suficientes para o indicador mais longo (MACD 26 + sinal 9).
 CANDLES_POR_CICLO = 120
 
-# Lote mínimo negociável. É o menor tamanho de posição possível — a postura mais
-# conservadora que o broker permite.
-# TODO: ler `symbol_info(symbol).volume_min` do MT5 por símbolo; 0.01 é o mínimo
-# padrão da maioria dos pares, mas alguns brokers exigem mais.
-VOLUME_MINIMO = 0.01
-
 # Take profit a 2x a distância do stop: relação risco/retorno de 1:2.
 RR_RATIO = 2.0
 
@@ -158,7 +152,7 @@ class BotRunner:
 
         account = client.get_account_info()
         tick = client.get_tick(symbol)
-        instrument = self._get_or_create_instrument(session, symbol)
+        instrument = self._get_or_create_instrument(session, symbol, client)
 
         side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
         entry = tick.ask if side is Side.BUY else tick.bid
@@ -175,16 +169,17 @@ class BotRunner:
             logger.warning("runner.stop_invalido", symbol=symbol, stop_loss=stop_loss)
             return
 
-        risco_monetario = distancia_sl * VOLUME_MINIMO * instrument.contract_size
+        risco_monetario = distancia_sl * instrument.min_volume * instrument.contract_size
 
         order_manager.place_order(
             request=OrderRequest(
                 symbol=symbol,
                 side=side,
-                volume=VOLUME_MINIMO,
+                volume=instrument.min_volume,
                 price=entry,
                 stop_loss=stop_loss,
                 take_profit=take_profit,
+                min_volume=instrument.min_volume,
             ),
             client_request_id=self._client_request_id(symbol, side),
             instrument_id=instrument.id,
@@ -225,14 +220,25 @@ class BotRunner:
         return (exposto / equity) * 100.0
 
     @staticmethod
-    def _get_or_create_instrument(session: Session, symbol: str) -> Instrument:
+    def _get_or_create_instrument(session: Session, symbol: str, client: MT5Client) -> Instrument:
+        """Busca ou cria o instrumento, sincronizando `min_volume` com o broker.
+
+        O lote mínimo é lido do broker a cada chamada, não só na criação: é o
+        broker quem decide esse valor, e ele pode mudar sem que o registro
+        local seja recriado.
+        """
+        min_volume = client.get_symbol_info(symbol).volume_min
+
         instrument = session.execute(
             select(Instrument).where(Instrument.symbol == symbol)
         ).scalar_one_or_none()
         if instrument is not None:
+            if instrument.min_volume != min_volume:
+                instrument.min_volume = min_volume
+                session.commit()
             return instrument
 
-        instrument = Instrument(symbol=symbol)
+        instrument = Instrument(symbol=symbol, min_volume=min_volume)
         session.add(instrument)
         session.commit()
         return instrument

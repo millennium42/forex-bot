@@ -235,7 +235,7 @@
         "falha de MT5 encerra o ciclo em vez de pular simbolo",
         "coverage do runner >= 80%"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 22,
@@ -251,7 +251,7 @@
         "dark mode e light mode",
         "tsc --noEmit e eslint limpos"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 23,
@@ -262,7 +262,7 @@
         "coluna min_volume em instruments com migration aditiva",
         "volume abaixo do minimo do broker e rejeitado antes de enviar"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }

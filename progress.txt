@@ -8,6 +8,17 @@
 - Docstrings e comentarios em portugues; identificadores em ingles.
 - Migrations sao aditivas. Nunca editar revisao ja aplicada.
 - Scripts do Ralph leem prd.json via Python, nao jq (jq nao esta instalado nesta maquina).
+- Congelar `datetime.now()` em teste sob mypy strict: o `now(cls, tz=None)` tem que devolver
+  `cls(...)`, nao `datetime(...)` - senao o `override` quebra por tipo de retorno incompativel.
+- `monkeypatch.setattr(modulo, "time", ...)` quebra o mypy strict quando "time" e so um
+  `import time` no topo do modulo (nao reexportado). Importe `time` no proprio teste e mocke
+  `time.sleep` ali - mesmo objeto de modulo, mesmo efeito, sem acessar atributo nao reexportado.
+- Coluna NOT NULL nova em tabela com dados existentes: `server_default` na migration de criacao,
+  depois `op.alter_column(..., server_default=None)` para nao deixar o default preso no schema -
+  o default de verdade fica so no `mapped_column(default=...)` do lado Python.
+- `MT5Terminal` e um Protocol estrutural: metodo novo no Protocol exige atualizar TODO FakeTerminal
+  usado como `terminal=` em teste, senao o mypy strict rejeita a injecao (exceto onde o dublê ja
+  tem `# type: ignore` deliberado).
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -277,4 +288,106 @@
   limite e 0.19 USD, e o menor trade possivel (0.01 lote, SL de ATR*2) arrisca ~0.26 USD. O risk
   manager barra 100% das ordens — corretamente. Para ver execucao e preciso conta demo com
   equity >= ~200 USD. Nao afrouxe o limite de risco para "fazer operar".
+---
+
+## [2026-08-05] — História 21: Testes do BotRunner
+- backend/tests/test_runner.py (18 testes: kill switch, ATR invalido, SL derivado do ATR,
+  client_request_id por minuto, perda do dia, exposicao aberta, falha de MT5, _process_symbol
+  ponta-a-ponta, run() com max_cycles).
+- **Aprendizados para as próximas iterações:**
+  - `runner.py` já existia (criado antes desta história, sem testes dedicados) — o trabalho foi
+    só a suíte de teste, sem tocar o módulo de produção.
+  - Para testar `_executar`/`_process_symbol` isolado, construir `FusedSignal` manualmente em vez
+    de gerar sinal real via `TechnicalAnalyzer` — desacopla o teste do runner da lógica direcional
+    do `technical_analyzer` (que é reversão à média, não segue tendência; uma série em alta forte
+    pode virar SELL na fusão dependendo da confiança relativa de cada componente).
+  - `run()` é testável sem Postgres nem MT5 real: `MT5Client` e `session_scope` são monkeypatchados
+    no módulo do runner (`runner_module.MT5Client = lambda **_: fake_client`,
+    `runner_module.session_scope = fake_contextmanager`), e `run_cycle` é substituído por um spy
+    para não reprocessar símbolos de verdade.
+  - Ver os dois gotchas novos no topo do arquivo (Codebase Patterns): congelar `datetime.now()`
+    sob mypy strict, e monkeypatch de nome só-importado (`time`) via o módulo original, não via
+    atributo do módulo testado.
+  - Cobertura final: `backend/execution/runner.py` 98% (faltam só 2 linhas: um branch de
+    `RiskValidationError` inalcançável no fluxo atual porque o `order_manager` já absorve essa
+    exceção internamente, e o retorno `HOLD` de `_process_symbol`). Suíte inteira: 292 testes,
+    coverage global 91.95%.
+---
+
+## [2026-08-05] — História 22: Dashboard rico
+- Backend: `backend/api/routers/trades.py` (`GET /trades/history` com filtros symbol/status/
+  since/until, junta Trade+Instrument+Signal+Outcome sem `relationship()`), `signals.py`
+  (`GET /signals/` real, era stub), `audit.py` (novo, `GET /audit/` com filtro por
+  `event_type`), `promotion.py` (`GET /promotion/status` agora calcula métricas reais do
+  forward test a partir de `Outcome` e devolve `criteria: [{value, target, unit, passed}]`
+  por gate). Testes novos em `backend/tests/test_dashboard_api.py` (padrão
+  dependency_overrides + StaticPool de `test_kill_switch.py`).
+- Frontend: reescrita completa de `frontend/src/app/page.tsx` como orquestrador de 5 abas
+  (Visão geral, Trades, Sinais, Gates, Auditoria), 5 gráficos (curva de capital, distribuição
+  de P&L, win rate por par, sentimento vs. técnica, heatmap por hora), 3 modais (trade, sinal,
+  kill switch) e cards de insight. Dark/light mode via `frontend/src/lib/theme.tsx` + toggle no
+  header. Estrutura nova: `lib/{api,theme,palette,format,insights}.ts`,
+  `components/{Header,Tabs,InsightCard,MetricCard}.tsx`, `components/charts/*.tsx`,
+  `components/modals/*.tsx`, `components/tabs/*.tsx`.
+- **Aprendizados para as próximas iterações:**
+  - Não existe endpoint pronto para nada disso — o HANDOFF dizia "o backend já expõe o que
+    precisa", mas `/signals/` era stub vazio, `/trades/` só listava posição aberta ao vivo no
+    MT5 (nada do banco) e `/promotion/status` sempre devolvia métricas zeradas. História de UI
+    "só front" nesse projeto quase sempre exige endpoint novo — checar o schema real do banco
+    antes de assumir que dá para montar a tela só com o que já existe.
+  - Sem tabela de equity histórico no banco: a curva de capital é reconstruída de trás pra
+    frente (equity atual menos a soma do PnL dos trades encerrados, andando no tempo). Dado
+    real, não interpolado, mas não sobrevive a um F5 se a conta mudar de equity por fora do
+    fluxo de trades rastreados.
+  - Paleta de marca (azul/roxo) falha o validador da skill `dataviz` como par categórico
+    (ΔE 1.3 deutan). Gráfico usa paleta própria em `lib/palette.ts`, validada com
+    `scripts/validate_palette.js` da skill contra as duas superfícies do app.
+  - React Compiler (Next 16/React 19) linta `useEffect` com `react-hooks/set-state-in-effect`
+    e `react-hooks/purity` (`Date.now()` durante render, mesmo dentro de `useMemo`). Fetch
+    inicial e filtro por janela de tempo são falsos positivos legítimos — resolvidos com
+    `eslint-disable-next-line` pontual, mesmo padrão que a história 17 já tinha usado pro
+    `mounted`.
+  - Tailwind v4 dark mode por classe (`@custom-variant dark`) + variável CSS redefinida dentro
+    de `.dark {}`, não media query — o toggle do usuário precisa vencer a preferência do SO.
+    Script inline no `layout.tsx` aplica a classe antes do primeiro paint (evita flash);
+    `suppressHydrationWarning` obrigatório porque esse script roda fora do React.
+  - Verificação visual: sem `chromium-cli` no ambiente, instalei Playwright sob demanda
+    (`npx --yes -p playwright playwright install chromium`) e rodei o driver com `NODE_PATH`
+    apontando pro cache do npx (`npm config get cache` → `_npx/<hash>/node_modules`), porque
+    `node script.js` direto não resolve um pacote instalado só via `npx -p`.
+  - Achei um `uvicorn` de sessão anterior preso na porta 8001 rodando código desatualizado (sem
+    `--reload`) — `netstat -ano` + `Get-CimInstance Win32_Process -Filter "ProcessId=X"` (
+    PowerShell) confirmou que era o mesmo repo antes de matar e subir de novo. `next dev` faz
+    Fast Refresh sozinho; `uvicorn` sem `--reload`, não.
+  - Conta demo real conectada durante o teste (MetaQuotes-Demo, equity ainda ~19 USD, mesma
+    situação registrada na revisão pós-Ralph anterior): confirma que os endpoints novos leem o
+    banco de verdade, não inventam número.
+---
+
+## [2026-08-05] — História 23: Lote mínimo por símbolo
+- O runner substituiu a constante `VOLUME_MINIMO = 0.01` por `instrument.min_volume`, lido do
+  broker via `MT5Client.get_symbol_info(symbol).volume_min` a cada chamada de
+  `_get_or_create_instrument` (não só na criação — o broker é a fonte de verdade, o registro local
+  sincroniza).
+- `risk_manager.validate_order` ganhou uma checagem: `OrderRequest.min_volume` (novo campo
+  opcional) rejeita a ordem antes de qualquer envio ao MT5 se `volume < min_volume`. Continua
+  sendo o único caminho para uma ordem — a checagem de lote mínimo entra no mesmo gate que já
+  valida SL, risco por trade e exposição.
+- Arquivos alterados: `backend/collection/mt5_client.py` (Protocol + `SymbolInfo` + `get_symbol_info`),
+  `backend/models/instrument.py` (coluna `min_volume`), `backend/execution/risk_manager.py`
+  (`OrderRequest.min_volume` + validação), `backend/execution/runner.py`,
+  `backend/migrations/versions/3514d21f36b7_add_instrument_min_volume.py`, testes correspondentes
+  em `backend/tests/`.
+- **Aprendizados para as próximas iterações:**
+  - `get_symbol_info` segue o mesmo formato de `get_tick`: retry com backoff, `_assert_conectado`,
+    erro explícito (nunca fallback) se o broker não responde ou devolve `volume_min <= 0`.
+  - Migration `NOT NULL` aditiva sobre tabela com linhas existentes precisa de `server_default` na
+    criação da coluna — sem isso `alembic upgrade` falha em ambiente com dado real. Removido depois
+    com `alter_column(server_default=None)` para não duplicar a fonte do default (Python já tem).
+  - Teste de banco com `INSERT` cru (`test_migrations.py`) não recebe default do ORM — precisou
+    listar a coluna nova explicitamente, como as demais colunas `NOT NULL` da tabela.
+  - Adicionar método ao `MT5Terminal` Protocol é uma mudança que se propaga: todo `FakeTerminal`
+    passado como `terminal=` em teste (três arquivos) precisou do método novo para o mypy strict
+    aceitar a injeção.
+---
 ---

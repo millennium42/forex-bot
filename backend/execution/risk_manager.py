@@ -22,6 +22,10 @@ class OrderRequest:
     price: float
     stop_loss: float | None
     take_profit: float | None
+    # Lote mínimo do broker para o símbolo (`symbol_info().volume_min`). `None`
+    # quando a origem da ordem não o conhece — nesse caso a checagem é pulada,
+    # nunca vira rejeição por um valor que ninguém informou.
+    min_volume: float | None = None
 
 
 class RiskManager:
@@ -68,6 +72,13 @@ class RiskManager:
         # 2. SL obrigatório
         if request.stop_loss is None or request.stop_loss <= 0:
             raise RiskValidationError("Ordem sem stop loss (SL) é rejeitada")
+
+        # Volume mínimo do broker: enviar menos que isso o broker recusa, mas o
+        # objetivo é nunca deixar a ordem sair do risk manager nesse estado.
+        if request.min_volume is not None and request.volume < request.min_volume:
+            raise RiskValidationError(
+                f"Volume {request.volume} abaixo do mínimo do broker de {request.min_volume}"
+            )
 
         # 3. 1% por trade
         max_risk_per_trade = equity * (self.settings.max_risk_per_trade_pct / 100.0)

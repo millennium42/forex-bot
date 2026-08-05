@@ -69,10 +69,16 @@ for ($i = 1; $i -le $MaxIterations; $i++) {
     $output = $promptText | & claude --dangerously-skip-permissions --print
     $output | Write-Host
 
+    # O prd.json e a autoridade, nao o texto da resposta: o agente pode citar a
+    # string de conclusao ao explicar que NAO concluiu, e o match textual sozinho
+    # encerraria o loop com historias em aberto.
     if ($output -match "<promise>COMPLETE</promise>") {
-        Write-Host ""
-        Write-Host "Ralph concluiu todas as historias na iteracao $i."
-        exit 0
+        if ((Get-HistoriasAbertas).Count -eq 0) {
+            Write-Host ""
+            Write-Host "Ralph concluiu todas as historias na iteracao $i."
+            exit 0
+        }
+        Write-Host "Agente sinalizou COMPLETE mas ainda ha historia aberta. Seguindo."
     }
 
     # Guarda contra loop improdutivo: se nada foi concluido, para para inspecao.

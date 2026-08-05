@@ -1,0 +1,494 @@
+"""História 21 — cobertura do motor autônomo (BotRunner).
+
+O runner é onde o pipeline inteiro se encontra, então os testes aqui garantem
+que nenhum número usado pelo risk manager é inventado: kill switch bloqueia o
+ciclo inteiro, ATR inválido não vira ordem, o stop é derivado da volatilidade
+medida (não constante), a idempotência tem granularidade de minuto, a perda do
+dia vem só de outcomes negativos de hoje, a exposição enxerga posição aberta
+fora do bot, e falha de MT5 encerra o ciclo em vez de pular o símbolo.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import itertools
+import time
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from backend.analysis.signal_fusion import FusedSignal
+from backend.collection.mt5_client import MT5Client, MT5ConnectionError
+from backend.config import Settings
+from backend.execution import runner as runner_module
+from backend.execution.kill_switch import trigger_kill_switch
+from backend.execution.order_manager import OrderManager
+from backend.execution.risk_manager import RiskManager
+from backend.execution.runner import BotRunner
+from backend.models.enums import Direction, Side
+from backend.models.instrument import Instrument
+from backend.models.outcome import Outcome
+from backend.models.trade import Trade
+
+BUY_SIGNAL = FusedSignal(direction=Direction.BUY, score=0.5, confidence=0.8, weight_version="v1.0")
+
+
+class _FixedDatetime(datetime):
+    """`datetime.now()` congelado, para testar janelas de idempotência sem flake."""
+
+    @classmethod
+    def now(cls, tz: Any = None) -> _FixedDatetime:
+        return cls(2026, 1, 1, 10, 30, 45, tzinfo=UTC)
+
+
+class FakeTerminal:
+    """Dublê do módulo MetaTrader5, no mesmo formato usado em test_mt5_client.py."""
+
+    def __init__(
+        self,
+        *,
+        positions: tuple[Any, ...] = (),
+        tick: Any = None,
+        retcode: int | None = 10009,
+        equity: float = 100_000.0,
+        candle_rows: list[dict[str, float]] | None = None,
+        volume_min: float = 0.01,
+    ) -> None:
+        self.positions = positions
+        self._tick = tick or SimpleNamespace(time=1_700_000_000, bid=1.0850, ask=1.0852)
+        self.retcode = retcode
+        self.equity = equity
+        self.candle_rows = candle_rows
+        self.volume_min = volume_min
+        self.last_order: dict[str, Any] | None = None
+
+    def initialize(self, *_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    def login(self, *_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    def shutdown(self) -> None:
+        pass
+
+    def last_error(self) -> tuple[int, str]:
+        return (1, "fake error")
+
+    def account_info(self) -> Any:
+        return SimpleNamespace(
+            login=1,
+            server="Demo",
+            currency="USD",
+            balance=self.equity,
+            equity=self.equity,
+            margin=0.0,
+            margin_free=self.equity,
+            leverage=100,
+            trade_mode=0,
+        )
+
+    def symbol_info_tick(self, _symbol: str) -> Any:
+        return self._tick
+
+    def symbol_info(self, _symbol: str) -> Any:
+        return SimpleNamespace(volume_min=self.volume_min)
+
+    def symbol_select(self, _symbol: str, _enable: bool) -> bool:
+        return True
+
+    def positions_get(self) -> Any:
+        return self.positions
+
+    def copy_rates_from_pos(self, symbol: str, timeframe: int, start_pos: int, count: int) -> Any:
+        return self.candle_rows
+
+    def order_send(self, request: dict[str, Any]) -> Any:
+        self.last_order = request
+        if self.retcode is None:
+            return None
+
+        class Result:
+            retcode = self.retcode
+            order = 123
+            deal = 456
+            price = request.get("price", 1.1)
+            volume = request.get("volume", 0.01)
+            comment = ""
+
+        return Result()
+
+    @property
+    def TRADE_ACTION_DEAL(self) -> int:  # noqa: N802
+        return 1
+
+    @property
+    def ORDER_TYPE_BUY(self) -> int:  # noqa: N802
+        return 0
+
+    @property
+    def ORDER_TYPE_SELL(self) -> int:  # noqa: N802
+        return 1
+
+    @property
+    def TRADE_RETCODE_DONE(self) -> int:  # noqa: N802
+        return 10009
+
+
+def _settings(**overrides: object) -> Settings:
+    base: dict[str, object] = {"trading_mode": "demo", "real_trading_unlocked": False}
+    base.update(overrides)
+    return Settings(_env_file=None, **base)  # type: ignore[arg-type]
+
+
+def _client(terminal: FakeTerminal | None = None) -> MT5Client:
+    client = MT5Client(terminal=terminal or FakeTerminal(), settings=_settings())
+    client._connected = True
+    return client
+
+
+def _runner(symbols: list[str] | None = None) -> BotRunner:
+    return BotRunner(symbols or ["EURUSD"], settings=_settings())
+
+
+# -- kill switch impede o ciclo inteiro (AC1) -------------------------------
+
+
+def test_run_cycle_kill_switch_ativo_impede_o_ciclo_inteiro(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trigger_kill_switch(session, reason="teste", actor="tester")
+
+    processed: list[str] = []
+    runner = _runner(["EURUSD", "GBPUSD"])
+    monkeypatch.setattr(runner, "_process_symbol", lambda *a, **kw: processed.append(a[0]))
+
+    runner.run_cycle(_client(), session)
+
+    assert processed == []
+
+
+# -- ATR inválido não gera ordem (AC2) ---------------------------------------
+
+
+@pytest.mark.parametrize("atr_invalido", [0.0, -0.001])
+def test_executar_atr_invalido_nao_gera_ordem(session: Session, atr_invalido: float) -> None:
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._executar("EURUSD", BUY_SIGNAL, atr_invalido, client, session, order_manager)
+
+    assert session.execute(select(Trade)).scalars().all() == []
+
+
+# -- stop loss derivado do ATR, não constante (AC3) --------------------------
+
+
+@pytest.mark.parametrize(("symbol", "atr"), [("EURUSD", 0.0010), ("GBPUSD", 0.0030)])
+def test_executar_stop_loss_e_derivado_do_atr(session: Session, symbol: str, atr: float) -> None:
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._executar(symbol, BUY_SIGNAL, atr, client, session, order_manager)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    distancia_sl = atr * runner.settings.atr_sl_multiplier
+    entrada = client.get_tick(symbol).ask
+    assert trade.stop_loss == pytest.approx(entrada - distancia_sl)
+    assert trade.take_profit == pytest.approx(entrada + distancia_sl * runner_module.RR_RATIO)
+
+
+def test_executar_stop_loss_nao_e_constante_entre_atrs_diferentes(session: Session) -> None:
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager)
+    runner._executar("GBPUSD", BUY_SIGNAL, 0.0030, client, session, order_manager)
+
+    trades = session.execute(select(Trade).order_by(Trade.id)).scalars().all()
+    assert len(trades) == 2
+    assert trades[0].stop_loss != trades[1].stop_loss
+
+
+# -- lote mínimo vem do broker por símbolo (história 23) ---------------------
+
+
+def test_executar_usa_volume_minimo_do_broker(session: Session) -> None:
+    runner = _runner()
+    client = _client(FakeTerminal(volume_min=0.05))
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    assert trade.volume == pytest.approx(0.05)
+
+
+# -- idempotência com granularidade de minuto (AC4) --------------------------
+
+
+def test_client_request_id_mesmo_minuto_mesmo_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module, "datetime", _FixedDatetime)
+
+    id1 = BotRunner._client_request_id("EURUSD", Side.BUY)
+    id2 = BotRunner._client_request_id("EURUSD", Side.BUY)
+
+    assert id1 == id2
+
+
+def test_client_request_id_muda_entre_simbolos(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module, "datetime", _FixedDatetime)
+
+    id_eur = BotRunner._client_request_id("EURUSD", Side.BUY)
+    id_gbp = BotRunner._client_request_id("GBPUSD", Side.BUY)
+
+    assert id_eur != id_gbp
+
+
+# -- perda do dia soma só outcomes negativos de hoje (AC5) -------------------
+
+
+_outcome_counter = itertools.count()
+
+
+def _outcome_de(session: Session, *, pnl: float, created_at: datetime) -> None:
+    n = next(_outcome_counter)
+    instrument = Instrument(symbol=f"SYM{n}")
+    session.add(instrument)
+    session.flush()
+
+    trade = Trade(
+        client_request_id=f"trade-{n}",
+        instrument_id=instrument.id,
+        side=Side.BUY,
+        volume=0.01,
+        stop_loss=1.0,
+        trading_mode="demo",
+    )
+    session.add(trade)
+    session.flush()
+
+    outcome = Outcome(
+        trade_id=trade.id,
+        exit_price=1.0,
+        pnl=pnl,
+        pnl_pct=pnl / 100.0,
+        duration_seconds=60,
+        actual_direction=Direction.BUY if pnl >= 0 else Direction.SELL,
+        was_correct=pnl >= 0,
+        created_at=created_at,
+    )
+    session.add(outcome)
+    session.commit()
+
+
+def test_perda_do_dia_soma_apenas_outcomes_negativos_de_hoje(session: Session) -> None:
+    agora = datetime.now(UTC)
+    ontem = agora - timedelta(days=1)
+
+    _outcome_de(session, pnl=-50.0, created_at=agora)
+    _outcome_de(session, pnl=30.0, created_at=agora)  # positivo: não conta
+    _outcome_de(session, pnl=-20.0, created_at=ontem)  # de ontem: não conta
+
+    assert BotRunner._perda_do_dia(session) == pytest.approx(50.0)
+
+
+# -- exposição enxerga posição aberta fora do bot (AC6) -----------------------
+
+
+def test_exposicao_aberta_inclui_posicoes_abertas_fora_do_bot() -> None:
+    posicoes_manuais = (
+        SimpleNamespace(
+            ticket=1,
+            identifier=1,
+            symbol="EURUSD",
+            volume=0.5,
+            type=0,
+            sl=0.0,
+            tp=0.0,
+            price_open=1.1000,
+        ),
+        SimpleNamespace(
+            ticket=2,
+            identifier=2,
+            symbol="GBPUSD",
+            volume=0.2,
+            type=1,
+            sl=0.0,
+            tp=0.0,
+            price_open=1.3000,
+        ),
+    )
+    client = _client(FakeTerminal(positions=posicoes_manuais))
+    equity = 100_000.0
+
+    exposicao = BotRunner._exposicao_aberta(client, equity)
+
+    exposto = abs(0.5 * 1.1000) + abs(0.2 * 1.3000)
+    assert exposicao == pytest.approx((exposto / equity) * 100.0)
+
+
+def test_exposicao_aberta_com_equity_nao_positivo_bloqueia_tudo() -> None:
+    client = _client()
+    assert BotRunner._exposicao_aberta(client, 0.0) == 100.0
+
+
+# -- falha de MT5 encerra o ciclo em vez de pular o símbolo (AC7) ------------
+
+
+def test_run_cycle_falha_de_mt5_encerra_o_ciclo(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processados: list[str] = []
+
+    def fake_process_symbol(
+        symbol: str, _client: MT5Client, _session: Session, _order_manager: OrderManager
+    ) -> None:
+        processados.append(symbol)
+        if symbol == "EURUSD":
+            raise MT5ConnectionError("terminal caiu")
+
+    runner = _runner(["EURUSD", "GBPUSD"])
+    monkeypatch.setattr(runner, "_process_symbol", fake_process_symbol)
+
+    with pytest.raises(MT5ConnectionError):
+        runner.run_cycle(_client(), session)
+
+    assert processados == ["EURUSD"]
+
+
+def test_run_cycle_erro_generico_nao_interrompe_outros_simbolos(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processados: list[str] = []
+
+    def fake_process_symbol(
+        symbol: str, _client: MT5Client, _session: Session, _order_manager: OrderManager
+    ) -> None:
+        processados.append(symbol)
+        if symbol == "EURUSD":
+            raise ValueError("erro inesperado")
+
+    runner = _runner(["EURUSD", "GBPUSD"])
+    monkeypatch.setattr(runner, "_process_symbol", fake_process_symbol)
+
+    runner.run_cycle(_client(), session)
+
+    assert processados == ["EURUSD", "GBPUSD"]
+
+
+# -- utilitários auxiliares ---------------------------------------------------
+
+
+def test_get_or_create_instrument_reaproveita_instrumento_existente(session: Session) -> None:
+    client = _client()
+    primeiro = BotRunner._get_or_create_instrument(session, "EURUSD", client)
+    segundo = BotRunner._get_or_create_instrument(session, "EURUSD", client)
+
+    assert primeiro.id == segundo.id
+    assert len(session.execute(select(Instrument)).scalars().all()) == 1
+
+
+def test_get_or_create_instrument_le_volume_minimo_do_broker(session: Session) -> None:
+    """História 23: lote mínimo vem do broker por símbolo, não de uma constante."""
+    client = _client(FakeTerminal(volume_min=0.25))
+
+    instrumento = BotRunner._get_or_create_instrument(session, "XAUUSD", client)
+
+    assert instrumento.min_volume == pytest.approx(0.25)
+
+
+def test_get_or_create_instrument_atualiza_volume_minimo_quando_broker_muda(
+    session: Session,
+) -> None:
+    client_antigo = _client(FakeTerminal(volume_min=0.01))
+    BotRunner._get_or_create_instrument(session, "EURUSD", client_antigo)
+
+    client_novo = _client(FakeTerminal(volume_min=0.5))
+    instrumento = BotRunner._get_or_create_instrument(session, "EURUSD", client_novo)
+
+    assert instrumento.min_volume == pytest.approx(0.5)
+    assert len(session.execute(select(Instrument)).scalars().all()) == 1
+
+
+# -- _process_symbol: do candle cru até a ordem -------------------------------
+
+
+def _candle_rows(closes: list[float], amplitude: float = 0.5) -> list[dict[str, float]]:
+    return [
+        {"open": c - amplitude / 2, "high": c + amplitude, "low": c - amplitude, "close": c}
+        for c in closes
+    ]
+
+
+def test_process_symbol_com_poucos_candles_nao_avalia(session: Session) -> None:
+    candles = _candle_rows([100.0 + i * 0.1 for i in range(10)])  # abaixo do mínimo (35)
+    client = _client(FakeTerminal(candle_rows=candles))
+    runner = _runner()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    assert session.execute(select(Trade)).scalars().all() == []
+
+
+def test_process_symbol_com_sinal_direcional_executa_ordem(session: Session) -> None:
+    # Amplitude pequena o bastante para o risco monetário (ATR-based) caber no
+    # limite de 1% do equity; a direção em si (compra ou venda) não importa
+    # aqui — o que se testa é que _process_symbol chega até _executar.
+    candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
+    client = _client(FakeTerminal(candle_rows=candles))
+    runner = _runner()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    assert trade.stop_loss != trade.entry_price  # SL vem da volatilidade, não é constante
+
+
+# -- stop loss não positivo aborta a ordem ------------------------------------
+
+
+def test_executar_com_stop_loss_nao_positivo_nao_gera_ordem(session: Session) -> None:
+    preco_baixo = SimpleNamespace(time=1_700_000_000, bid=0.0011, ask=0.0012)
+    client = _client(FakeTerminal(tick=preco_baixo))
+    runner = _runner()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    # distância do SL (atr * multiplier) maior que o próprio preço de entrada.
+    runner._executar("EURUSD", BUY_SIGNAL, 1.0, client, session, order_manager)
+
+    assert session.execute(select(Trade)).scalars().all() == []
+
+
+# -- run(): conecta, roda N ciclos e dorme entre eles -------------------------
+
+
+def test_run_conecta_e_executa_max_cycles(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_mt5_client = MT5Client(terminal=FakeTerminal(), settings=_settings())
+    monkeypatch.setattr(runner_module, "MT5Client", lambda **_kw: fake_mt5_client)
+
+    @contextlib.contextmanager
+    def _fake_session_scope() -> Any:
+        yield session
+
+    monkeypatch.setattr(runner_module, "session_scope", _fake_session_scope)
+    monkeypatch.setattr(time, "sleep", lambda _segundos: None)
+
+    runner = _runner(["EURUSD"])
+    ciclos: list[int] = []
+    monkeypatch.setattr(runner, "run_cycle", lambda *_a, **_kw: ciclos.append(1))
+
+    runner.run(max_cycles=2)
+
+    assert len(ciclos) == 2
+    assert fake_mt5_client.is_connected is False  # __exit__ desligou o terminal
