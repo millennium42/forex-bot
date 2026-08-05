@@ -20,38 +20,49 @@ import {
   BarChart2,
   DollarSign,
   ArrowUpRight,
-  ArrowDownRight
+  ArrowDownRight,
+  HelpCircle
 } from "lucide-react";
+
+const InfoTooltip = ({ text }: { text: string }) => (
+  <div className="relative flex items-center group cursor-help ml-1">
+    <HelpCircle className="w-4 h-4 text-slate-500 hover:text-blue-400 transition-colors" />
+    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity bg-slate-800 text-xs text-slate-200 p-2.5 rounded-lg shadow-xl border border-slate-700 z-50 text-center">
+      {text}
+      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-slate-700"></div>
+    </div>
+  </div>
+);
 
 // Mock data for demonstration purposes
 const equityData = [
-  { time: "09:00", equity: 100000 },
-  { time: "10:00", equity: 100150 },
-  { time: "11:00", equity: 100080 },
-  { time: "12:00", equity: 100400 },
-  { time: "13:00", equity: 100350 },
-  { time: "14:00", equity: 100800 },
-  { time: "15:00", equity: 101200 },
+  { time: "09:00", equity: 200.00 },
+  { time: "10:00", equity: 201.50 },
+  { time: "11:00", equity: 198.80 },
+  { time: "12:00", equity: 204.00 },
+  { time: "13:00", equity: 202.50 },
+  { time: "14:00", equity: 206.80 },
+  { time: "15:00", equity: 208.20 },
 ];
 
 const activeTrades = [
-  { id: "T-1042", pair: "EURUSD", side: "BUY", entry: 1.0924, current: 1.0945, pnl: 210, time: "10:23 AM" },
-  { id: "T-1043", pair: "GBPUSD", side: "SELL", entry: 1.2650, current: 1.2630, pnl: 200, time: "11:45 AM" },
-  { id: "T-1044", pair: "USDJPY", side: "BUY", entry: 149.20, current: 149.10, pnl: -100, time: "13:10 PM" },
+  { id: "T-1042", pair: "EURUSD", side: "COMPRA", entry: 1.0924, current: 1.0945, pnl: 2.10, time: "10:23" },
+  { id: "T-1043", pair: "GBPUSD", side: "VENDA", entry: 1.2650, current: 1.2630, pnl: 2.00, time: "11:45" },
+  { id: "T-1044", pair: "USDJPY", side: "COMPRA", entry: 149.20, current: 149.10, pnl: -1.50, time: "13:10" },
 ];
 
 const recentSignals = [
-  { id: "S-889", pair: "AUDUSD", direction: "BUY", confidence: 0.85, technique: "Fusion (TA+NLP)", time: "14:30 PM" },
-  { id: "S-890", pair: "USDCAD", direction: "SELL", confidence: 0.72, technique: "TA Only", time: "14:45 PM" },
-  { id: "S-891", pair: "EURGBP", direction: "HOLD", confidence: 0.40, technique: "Conflict", time: "15:00 PM" },
+  { id: "S-889", pair: "AUDUSD", direction: "COMPRA", confidence: 0.85, technique: "Fusão (TA+NLP)", time: "14:30" },
+  { id: "S-890", pair: "USDCAD", direction: "VENDA", confidence: 0.72, technique: "Somente TA", time: "14:45" },
+  { id: "S-891", pair: "EURGBP", direction: "MANTER", confidence: 0.40, technique: "Conflito", time: "15:00" },
 ];
 
 const promotionGates = [
-  { name: "Win Rate ≥ 55%", value: "58.4%", passed: true },
+  { name: "Taxa de Acerto ≥ 55%", value: "58.4%", passed: true },
   { name: "Sharpe ≥ 1.0", value: "1.24", passed: true },
-  { name: "Max Drawdown ≤ 10%", value: "4.2%", passed: true },
-  { name: "Profit Factor ≥ 1.3", value: "1.45", passed: true },
-  { name: "Backtest Deviation < 15%", value: "8.1%", passed: true },
+  { name: "Drawdown Máx ≤ 10%", value: "4.2%", passed: true },
+  { name: "Fator de Lucro ≥ 1.3", value: "1.45", passed: true },
+  { name: "Desvio do Backtest < 15%", value: "8.1%", passed: true },
 ];
 
 export default function Dashboard() {
@@ -73,20 +84,20 @@ export default function Dashboard() {
           <h1 className="text-3xl md:text-4xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-500">
             Forex Bot
           </h1>
-          <p className="text-slate-400 mt-1">Intelligent Agentic Trading Dashboard</p>
+          <p className="text-slate-400 mt-1">Dashboard Inteligente do Agente de Trading</p>
         </div>
         <div className="flex items-center gap-3 bg-slate-800/50 py-2 px-4 rounded-full border border-slate-700/50 backdrop-blur-md">
           <div className="h-2.5 w-2.5 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.6)] animate-pulse"></div>
-          <span className="text-sm font-medium text-emerald-400">System Online (Demo Mode)</span>
+          <span className="text-sm font-medium text-emerald-400">Sistema Online (Modo Demo)</span>
         </div>
       </header>
 
       {/* Overview Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8 animate-slide-up" style={{ animationDelay: "0.2s" }}>
-        <MetricCard title="Total Equity" value="$101,200.00" change="+1.2%" isPositive={true} icon={<DollarSign className="w-5 h-5 text-blue-400" />} />
-        <MetricCard title="Today's P&L" value="$1,200.00" change="+1.2%" isPositive={true} icon={<Activity className="w-5 h-5 text-emerald-400" />} />
-        <MetricCard title="Open Positions" value="3" subtitle="Total Exposure: 1.5%" icon={<BarChart2 className="w-5 h-5 text-purple-400" />} />
-        <MetricCard title="Promotion Status" value="5 / 5" subtitle="Ready for evaluation" icon={<ShieldCheck className="w-5 h-5 text-amber-400" />} />
+        <MetricCard title="Capital Total" tooltip="Saldo atual (equity) incluindo lucros/prejuízos de trades abertos." value="R$ 208,20" change="+4.1%" isPositive={true} icon={<DollarSign className="w-5 h-5 text-blue-400" />} />
+        <MetricCard title="Lucro/Prejuízo Hoje" tooltip="Resultado financeiro das operações fechadas no dia de hoje." value="R$ 8,20" change="+4.1%" isPositive={true} icon={<Activity className="w-5 h-5 text-emerald-400" />} />
+        <MetricCard title="Posições Abertas" tooltip="Trades atualmente rodando no mercado." value="3" subtitle="Exposição Total: 1.5%" icon={<BarChart2 className="w-5 h-5 text-purple-400" />} />
+        <MetricCard title="Status da Promoção" tooltip="Critérios avaliados para liberar a chave de conta real." value="5 / 5" subtitle="Pronto para avaliação" icon={<ShieldCheck className="w-5 h-5 text-amber-400" />} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
@@ -96,12 +107,13 @@ export default function Dashboard() {
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-semibold flex items-center gap-2">
               <TrendingUp className="w-5 h-5 text-blue-400" />
-              Equity Curve (Intraday)
+              Curva de Capital (Intradiário)
+              <InfoTooltip text="Histórico da evolução do seu capital (equity)" />
             </h2>
             <select className="bg-slate-800/80 border border-slate-700 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-blue-500">
-              <option>Today</option>
-              <option>This Week</option>
-              <option>This Month</option>
+              <option>Hoje</option>
+              <option>Esta Semana</option>
+              <option>Este Mês</option>
             </select>
           </div>
           <div className="h-[300px] w-full">
@@ -115,10 +127,11 @@ export default function Dashboard() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                 <XAxis dataKey="time" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
-                <YAxis domain={['dataMin - 200', 'dataMax + 200']} stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => `$${val.toLocaleString()}`} />
+                <YAxis domain={['dataMin - 5', 'dataMax + 5']} stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} tickFormatter={(val) => `R$${val.toFixed(2)}`} />
                 <Tooltip 
                   contentStyle={{ backgroundColor: 'rgba(15, 23, 42, 0.9)', borderColor: 'rgba(51, 65, 85, 0.5)', borderRadius: '8px', color: '#fff' }}
                   itemStyle={{ color: '#3b82f6' }}
+                  formatter={(value: number) => [`R$ ${value.toFixed(2)}`, 'Capital']}
                 />
                 <Area type="monotone" dataKey="equity" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorEquity)" />
               </AreaChart>
@@ -130,7 +143,8 @@ export default function Dashboard() {
         <div className="glass-card rounded-2xl p-6 animate-slide-up" style={{ animationDelay: "0.4s" }}>
           <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-purple-400" />
-            Promotion Gates
+            Gates de Promoção
+            <InfoTooltip text="Métricas avaliadas continuamente para permitir o bot a operar com dinheiro real" />
           </h2>
           <div className="space-y-4">
             {promotionGates.map((gate, idx) => (
@@ -147,7 +161,7 @@ export default function Dashboard() {
           </div>
           
           <button className="w-full mt-6 py-3 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-white font-medium shadow-lg hover:shadow-blue-500/25 transition-all active:scale-[0.98]">
-            Evaluate Promotion
+            Avaliar Promoção
           </button>
         </div>
       </div>
@@ -159,18 +173,19 @@ export default function Dashboard() {
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-semibold flex items-center gap-2">
               <Activity className="w-5 h-5 text-emerald-400" />
-              Active Trades
+              Trades Ativos
+              <InfoTooltip text="Lista de operações em andamento sincronizadas com o MetaTrader5" />
             </h2>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
               <thead className="text-xs text-slate-400 uppercase bg-slate-800/50 rounded-t-lg">
                 <tr>
-                  <th className="px-4 py-3 rounded-tl-lg">Pair</th>
-                  <th className="px-4 py-3">Side</th>
-                  <th className="px-4 py-3">Entry</th>
-                  <th className="px-4 py-3">Current</th>
-                  <th className="px-4 py-3 text-right rounded-tr-lg">P&L</th>
+                  <th className="px-4 py-3 rounded-tl-lg">Par</th>
+                  <th className="px-4 py-3">Lado</th>
+                  <th className="px-4 py-3">Entrada</th>
+                  <th className="px-4 py-3">Atual</th>
+                  <th className="px-4 py-3 text-right rounded-tr-lg">L/P</th>
                 </tr>
               </thead>
               <tbody>
@@ -178,7 +193,7 @@ export default function Dashboard() {
                   <tr key={idx} className="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
                     <td className="px-4 py-3 font-medium text-slate-200">{trade.pair}</td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-1 rounded text-xs font-semibold ${trade.side === 'BUY' ? 'bg-blue-500/20 text-blue-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                      <span className={`px-2 py-1 rounded text-xs font-semibold ${trade.side === 'COMPRA' ? 'bg-blue-500/20 text-blue-400' : 'bg-rose-500/20 text-rose-400'}`}>
                         {trade.side}
                       </span>
                     </td>
@@ -186,7 +201,7 @@ export default function Dashboard() {
                     <td className="px-4 py-3 text-slate-300">{trade.current.toFixed(4)}</td>
                     <td className={`px-4 py-3 text-right font-semibold flex justify-end items-center gap-1 ${trade.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                       {trade.pnl >= 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
-                      ${Math.abs(trade.pnl).toFixed(2)}
+                      R$ {Math.abs(trade.pnl).toFixed(2)}
                     </td>
                   </tr>
                 ))}
@@ -200,7 +215,8 @@ export default function Dashboard() {
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-semibold flex items-center gap-2">
               <Clock className="w-5 h-5 text-amber-400" />
-              Recent Signals
+              Sinais Recentes
+              <InfoTooltip text="Últimos sinais emitidos pela fusão do algoritmo técnico e de análise de sentimento" />
             </h2>
           </div>
           <div className="space-y-3">
@@ -208,12 +224,12 @@ export default function Dashboard() {
               <div key={idx} className="flex items-center justify-between p-4 rounded-xl bg-slate-800/40 border border-slate-700/30 hover:bg-slate-800/60 transition-colors">
                 <div className="flex items-center gap-4">
                   <div className={`flex items-center justify-center w-10 h-10 rounded-lg ${
-                    signal.direction === 'BUY' ? 'bg-blue-500/20 text-blue-400' : 
-                    signal.direction === 'SELL' ? 'bg-rose-500/20 text-rose-400' : 
+                    signal.direction === 'COMPRA' ? 'bg-blue-500/20 text-blue-400' : 
+                    signal.direction === 'VENDA' ? 'bg-rose-500/20 text-rose-400' : 
                     'bg-slate-500/20 text-slate-400'
                   }`}>
-                    {signal.direction === 'BUY' ? <TrendingUp className="w-5 h-5" /> : 
-                     signal.direction === 'SELL' ? <TrendingDown className="w-5 h-5" /> : 
+                    {signal.direction === 'COMPRA' ? <TrendingUp className="w-5 h-5" /> : 
+                     signal.direction === 'VENDA' ? <TrendingDown className="w-5 h-5" /> : 
                      <Activity className="w-5 h-5" />}
                   </div>
                   <div>
@@ -223,8 +239,8 @@ export default function Dashboard() {
                 </div>
                 <div className="text-right">
                   <span className={`text-sm font-bold block ${
-                    signal.direction === 'BUY' ? 'text-blue-400' : 
-                    signal.direction === 'SELL' ? 'text-rose-400' : 
+                    signal.direction === 'COMPRA' ? 'text-blue-400' : 
+                    signal.direction === 'VENDA' ? 'text-rose-400' : 
                     'text-slate-400'
                   }`}>{signal.direction}</span>
                   <span className="text-xs text-slate-400 mt-0.5 block">Conf: {(signal.confidence * 100).toFixed(0)}%</span>
@@ -240,7 +256,7 @@ export default function Dashboard() {
 }
 
 // Helper Component for Metrics
-function MetricCard({ title, value, change, isPositive, subtitle, icon }: { title: string, value: string, change?: string, isPositive?: boolean, subtitle?: string, icon: React.ReactNode }) {
+function MetricCard({ title, value, change, isPositive, subtitle, icon, tooltip }: { title: string, value: string, change?: string, isPositive?: boolean, subtitle?: string, icon: React.ReactNode, tooltip?: string }) {
   return (
     <div className="glass-card rounded-2xl p-5 relative overflow-hidden group hover:border-slate-600/50 transition-all">
       <div className="absolute top-0 right-0 p-4 opacity-20 group-hover:opacity-40 transition-opacity transform group-hover:scale-110 group-hover:rotate-12 duration-300">
@@ -250,7 +266,10 @@ function MetricCard({ title, value, change, isPositive, subtitle, icon }: { titl
         <div className="p-2 bg-slate-800/80 rounded-lg shadow-sm border border-slate-700/50">
           {icon}
         </div>
-        <h3 className="text-sm font-medium text-slate-400">{title}</h3>
+        <h3 className="text-sm font-medium text-slate-400 flex items-center gap-1.5">
+          {title}
+          {tooltip && <InfoTooltip text={tooltip} />}
+        </h3>
       </div>
       <div className="flex items-end justify-between">
         <h4 className="text-2xl font-bold text-slate-100">{value}</h4>
