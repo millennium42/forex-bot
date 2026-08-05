@@ -45,3 +45,6 @@ ruvector.db
 .hive-mind/
 .claude-flow/
 *.db-journal
+
+# Estado local do Celery beat
+celerybeat-schedule*
