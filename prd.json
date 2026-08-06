@@ -468,6 +468,87 @@
         "docstring registra por que sao esses 4 e o que quebra nos outros"
       ],
       "passes": true
+    },
+    {
+      "id": 39,
+      "title": "Arquitetura de estrategias paralelas",
+      "description": "Hoje existe uma unica leitura tecnica (technical_analyzer + alpha factors). Passa a existir um registro de ESTRATEGIAS independentes: cada uma recebe o mesmo OHLC e produz seu proprio sinal, sem saber das outras. Todas rodam a cada ciclo e cada uma pode gerar ordem propria. `Signal.strategy` registra a origem, para medir performance por estrategia a partir dos outcomes ja existentes.",
+      "acceptanceCriteria": [
+        "Protocol Strategy: recebe DataFrame OHLC, devolve StrategySignal (direcao, confianca, componentes) ou None quando nao ha setup",
+        "registro de estrategias habilitadas via config (STRATEGIES_ENABLED)",
+        "coluna signals.strategy com migration aditiva; default 'technical' para o legado",
+        "o runner avalia TODAS as estrategias habilitadas por simbolo a cada ciclo",
+        "cada estrategia gera ordem independente, com client_request_id que inclui a estrategia - duas estrategias no mesmo simbolo/direcao nao colidem entre si",
+        "cooldown passa a ser por (simbolo, direcao, estrategia), nao global do simbolo",
+        "estrategia que lanca excecao e isolada: as outras continuam no mesmo ciclo",
+        "endpoint que reporta performance por estrategia (trades, win rate, pnl liquido)"
+      ],
+      "passes": false
+    },
+    {
+      "id": 40,
+      "title": "Estrategia BBRSI",
+      "description": "Reversao a media de geraked/metatrader5. Bollinger(500, 2.0) + RSI(7). COMPRA quando, na barra -2, RSI < 30 E fechamento abaixo da banda inferior; e na barra -1 o RSI volta acima de 30 E o fechamento volta acima da banda inferior, com RSI ainda < 50 e fechamento ainda abaixo da media. VENDA e o espelho com 70/50 e banda superior. Saida opcional no cruzamento da media central.",
+      "acceptanceCriteria": [
+        "periodos configuraveis, defaults BB(500, 2.0) e RSI(7)",
+        "as seis condicoes de compra verificadas exatamente como na fonte",
+        "venda e o espelho exato",
+        "serie curta demais para BB(500) devolve None, nunca sinal forjado",
+        "SL derivado da banda (BB_L - coef*(BB_M-BB_L)) como na fonte, nao do ATR global",
+        "teste com serie fixture que dispara compra, outra que dispara venda e outra neutra"
+      ],
+      "passes": false
+    },
+    {
+      "id": 41,
+      "title": "Estrategia 3MACD",
+      "description": "Seguidora de tendencia de geraked/metatrader5. Tres MACDs simultaneos: (5,8), (13,21) e (34,144). COMPRA quando o MACD lento esta positivo, o medio faz topo e o rapido cruza zero para cima. VENDA e o espelho com sinais invertidos.",
+      "acceptanceCriteria": [
+        "os tres pares de periodos configuraveis, defaults (5,8), (13,21), (34,144)",
+        "deteccao de topo/fundo do MACD medio sobre as ultimas barras",
+        "cruzamento de zero do MACD rapido detectado na barra, nao no valor absoluto",
+        "serie sem barras suficientes para o MACD(34,144) devolve None",
+        "teste com serie de tendencia de alta, de baixa e lateral"
+      ],
+      "passes": false
+    },
+    {
+      "id": 42,
+      "title": "Estrategia 2MACDSTO",
+      "description": "Reversao em tendencia de geraked/metatrader5. MACD(13,21) + MACD(34,144) + Stochastic(7,3,3). COMPRA quando o MACD lento esta positivo, o rapido negativo, o %K abaixo de 20 e o %K cruza o %D para cima. VENDA e o espelho com 80.",
+      "acceptanceCriteria": [
+        "parametros configuraveis, defaults MACD(13,21), MACD(34,144), Stoch(7,3,3)",
+        "as cinco condicoes de compra verificadas; venda e o espelho",
+        "cruzamento de %K sobre %D comparado com a barra anterior, nao so o nivel",
+        "usa a lib ta para o estocastico, sem reimplementar",
+        "teste por condicao: cada uma falhando isoladamente impede o sinal"
+      ],
+      "passes": false
+    },
+    {
+      "id": 43,
+      "title": "Performance por estrategia no dashboard",
+      "description": "Com varias estrategias operando em paralelo, o dado que importa passa a ser qual delas ganha dinheiro. O dashboard mostra, por estrategia: trades encerrados, win rate, pnl liquido, ganho e perda medios e o win rate de breakeven implicado.",
+      "acceptanceCriteria": [
+        "tabela por estrategia com os numeros vindos da API, nenhum calculado no front",
+        "estrategia sem trade encerrado mostra estado vazio, nunca zero como se fosse dado",
+        "destaca quando o win rate observado esta abaixo do breakeven implicado pelo RR",
+        "tsc --noEmit e eslint limpos"
+      ],
+      "passes": false
+    },
+    {
+      "id": 44,
+      "title": "Teto de posicoes simultaneas",
+      "description": "Com tres estrategias em paralelo nos quatro pares, o numero de posicoes abertas ao mesmo tempo cresce por multiplicacao (ate 12 aberturas por ciclo). Sem teto de exposicao - removido a pedido do operador na historia 32 - o unico freio e a margem, que so age quando ja e tarde. Entra um teto explicito de POSICOES SIMULTANEAS, separado de exposicao monetaria.",
+      "acceptanceCriteria": [
+        "MAX_OPEN_POSITIONS configuravel, default 12",
+        "contagem vem do broker, nao do banco: posicao aberta por fora conta",
+        "atingido o teto, o ciclo bloqueia novas ordens e registra o motivo",
+        "teto nao impede fechar posicao nem reduzir exposicao",
+        "teste: no teto bloqueia; abaixo permite; posicao externa conta"
+      ],
+      "passes": false
     }
   ]
 }
