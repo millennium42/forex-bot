@@ -39,6 +39,8 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 29 — Perda flutuante conta e drawdown acumulado bloqueia | ✅ |
 | 30 — Volume proporcional ao equity | ✅ |
 | 31 — contract_size sincronizado com o broker | ✅ |
+| 32 — Perfil agressivo: margem do broker como único teto de tamanho | ✅ |
+| 33 — Stop e alvo do perfil agressivo | ✅ |
 
 ---
 
@@ -223,6 +225,14 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   comparação `mudou = (...)` do `_get_or_create_instrument`. Ao adicionar um novo campo de
   `SymbolInfo` no futuro, incluí-lo ali é parte do trabalho, não um follow-up — o padrão já existe,
   só falta lembrar de estendê-lo.
+- **Mudar um default de config usado num teste que só cita o *nome* do campo (`runner.settings.
+  atr_sl_multiplier`) propaga sozinho; um teste que fixa o *valor numérico esperado* (fixture de ATR
+  escolhida a dedo para o default antigo) não propaga e quebra silenciosamente.** A história 33 trocou
+  `atr_sl_multiplier` de 2.0 para 1.0; `test_executar_volume_e_derivado_do_risco` (história 30) tinha
+  um ATR fixo calibrado para o default antigo cair num múltiplo exato do `volume_step` do broker — com
+  o novo default o volume calculado passou a arredondar (`1.6666... → 1.66`) e o `pytest.approx`
+  contra o valor bruto não batia mais. Ao mudar um default numérico, procure todo teste cujo *dado de
+  entrada* (não só a leitura do campo) foi escolhido em função do valor antigo.
 
 ---
 

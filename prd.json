@@ -397,7 +397,7 @@
         "docstring registra o win rate de breakeven implicado pelo RR configurado",
         "teste: SL e TP derivados do ATR com os multiplicadores configurados"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 34,

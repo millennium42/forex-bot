@@ -67,14 +67,6 @@ logger = structlog.get_logger(__name__)
 # em número de candles, não em tempo.
 CANDLES_POR_CICLO = 120
 
-# Take profit a 2x a distância do stop: relação risco/retorno de 1:2.
-#
-# Este número não é cosmético. Com RR de 1:2 o breakeven exige ~33% de acerto;
-# invertê-lo para 0.2 (arriscar 5 para ganhar 1) exigiria 83,3% — patamar que
-# nenhuma estratégia técnica sustenta. Alterar aqui muda a viabilidade
-# matemática do sistema inteiro, não só o tamanho do alvo.
-RR_RATIO = 2.0
-
 
 class BotRunner:
     """Percorre os símbolos configurados avaliando e, se couber, executando."""
@@ -312,10 +304,9 @@ class BotRunner:
         # Stop por volatilidade (§4 do PRD), não por distância fixa: o mesmo
         # número de pontos significa coisas diferentes em pares diferentes.
         distancia_sl = atr * self.settings.atr_sl_multiplier
+        distancia_tp = distancia_sl * self.settings.take_profit_rr
         stop_loss = entry - distancia_sl if side is Side.BUY else entry + distancia_sl
-        take_profit = (
-            entry + distancia_sl * RR_RATIO if side is Side.BUY else entry - distancia_sl * RR_RATIO
-        )
+        take_profit = entry + distancia_tp if side is Side.BUY else entry - distancia_tp
 
         if stop_loss <= 0:
             logger.warning("runner.stop_invalido", symbol=symbol, stop_loss=stop_loss)

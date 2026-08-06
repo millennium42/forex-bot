@@ -69,7 +69,14 @@ class Settings(BaseSettings):
     # `volume_max_per_order_lots` limitam tamanho).
     max_risk_per_trade_pct: float = Field(default=0.5, gt=0, le=100)
     max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)
-    atr_sl_multiplier: float = Field(default=2.0, gt=0)
+    # Perfil agressivo (história 33, a pedido do operador): stop largo (1.0x
+    # ATR) e alvo curto (0.2x ATR), scalping. TAKE_PROFIT_RR é a razão
+    # take_profit/stop_loss; o win rate de breakeven implicado é
+    # 1 / (1 + TAKE_PROFIT_RR) — com o default 0.2, isso é 1/1.2 ≈ 83,3%.
+    # Não altere este número sem entender que ele muda a viabilidade
+    # matemática do sistema inteiro, não só o tamanho do alvo.
+    atr_sl_multiplier: float = Field(default=1.0, gt=0)
+    take_profit_rr: float = Field(default=0.2, gt=0)
     macro_blackout_minutes: int = Field(default=15, ge=0)
 
     # --- Perfil agressivo (história 32) -------------------------------------

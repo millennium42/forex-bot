@@ -306,7 +306,25 @@ def test_executar_stop_loss_e_derivado_do_atr(session: Session, symbol: str, atr
     distancia_sl = atr * runner.settings.atr_sl_multiplier
     entrada = client.get_tick(symbol).ask
     assert trade.stop_loss == pytest.approx(entrada - distancia_sl)
-    assert trade.take_profit == pytest.approx(entrada + distancia_sl * runner_module.RR_RATIO)
+    assert trade.take_profit == pytest.approx(
+        entrada + distancia_sl * runner.settings.take_profit_rr
+    )
+
+
+def test_executar_sl_tp_usam_multiplicadores_configurados(session: Session) -> None:
+    runner = _runner(atr_sl_multiplier=3.0, take_profit_rr=0.5)
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0010
+    runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    entrada = client.get_tick("EURUSD").ask
+    distancia_sl = atr * 3.0
+    assert trade.stop_loss == pytest.approx(entrada - distancia_sl)
+    assert trade.take_profit == pytest.approx(entrada + distancia_sl * 0.5)
 
 
 def test_executar_stop_loss_nao_e_constante_entre_atrs_diferentes(session: Session) -> None:
@@ -333,10 +351,13 @@ def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
-    # ATR grande o bastante para o volume calculado pelo risco ficar abaixo do
-    # teto de tamanho da história 32 (default 2.0 lotes) — este teste cobre só
-    # a derivação por risco (história 30), não a interação com o teto.
-    atr = 0.0020
+    # ATR escolhido para o volume calculado pelo risco cair exato num múltiplo
+    # do volume_step do broker (evita ruído de arredondamento no approx) e
+    # ainda ficar abaixo do teto de tamanho da história 32 (default 2.0
+    # lotes), já considerando o atr_sl_multiplier default 1.0 da história 33
+    # — este teste cobre só a derivação por risco (história 30), não a
+    # interação com o teto.
+    atr = 0.0040
     runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
 
     trade = session.execute(select(Trade)).scalars().one()

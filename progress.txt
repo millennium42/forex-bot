@@ -659,3 +659,32 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     `SymbolInfo` que parece não estar chegando onde devia.
 ---
 Nenhuma historia concluida na iteracao 1. Parando para inspecao.
+
+## [2026-08-06] — História 33: Stop e alvo do perfil agressivo
+- `Settings.atr_sl_multiplier` mudou o default de 2.0 para 1.0 (stop mais largo, em ATR). O antigo
+  `RR_RATIO = 2.0` hard-coded em `runner.py` virou `Settings.take_profit_rr` (default 0.2) — o alvo
+  agora é 0.2x a distância do stop, não 2x: scalping de alvo curto e stop largo, a pedido do
+  operador. O docstring do campo em `config.py` registra a fórmula do win rate de breakeven
+  (`1 / (1 + take_profit_rr)`) e o número implicado pelo default (≈83,3%), para que ninguém altere
+  o valor sem entender o custo — o mesmo aviso que já existia como comentário solto em `runner.py`
+  antes de virar campo de config.
+- `_executar` calcula `distancia_tp = distancia_sl * self.settings.take_profit_rr` em vez de usar a
+  constante de módulo.
+- Arquivos alterados: `backend/config.py` (`atr_sl_multiplier` default 1.0, `take_profit_rr` novo),
+  `backend/execution/runner.py` (remove `RR_RATIO`, usa os dois campos de `Settings`),
+  `backend/tests/test_runner.py` (teste existente de SL/TP atualizado para ler `take_profit_rr` em
+  vez da constante removida; teste novo `test_executar_sl_tp_usam_multiplicadores_configurados` com
+  multiplicadores não-default, cobrindo a AC de "SL e TP derivados do ATR com os multiplicadores
+  configurados"; ATR de `test_executar_volume_e_derivado_do_risco` recalibrado — ver Aprendizados).
+- **Aprendizados para as próximas iterações:**
+  - Ver o padrão novo no topo do arquivo (AGENTS.md → Gotchas): mudar um default numérico de config
+    exige procurar não só os testes que leem o *nome* do campo, mas os que fixam um *valor de
+    entrada* calibrado para o default antigo. `test_executar_volume_e_derivado_do_risco` (história
+    30) tinha ATR escolhido para o volume calculado cair num múltiplo exato do `volume_step` do
+    broker sob o `atr_sl_multiplier` antigo (2.0); com o novo (1.0) o resultado passou a arredondar
+    e o `pytest.approx` contra o valor bruto (não arredondado) parou de bater. Corrigido recalibrando
+    o ATR da fixture, não a lógica de produção.
+  - `prd.json` já tinha a história 32 (perfil agressivo — margem do broker como único teto de
+    tamanho) marcada `passes: true` pelos commits anteriores, mas a tabela de estado do AGENTS.md
+    não tinha sido atualizada com essa linha — corrigido nesta iteração junto com a 33.
+---
