@@ -100,7 +100,13 @@ class Settings(BaseSettings):
     # partir do último Trade não-rejeitado nesse símbolo+direção. Direção
     # oposta às posições já abertas é sempre permitida, sem cooldown — é por
     # definição uma leitura diferente.
-    signal_repeat_cooldown_minutes: int = Field(default=15, gt=0)
+    # Intervalo mínimo para reabrir a MESMA direção no mesmo símbolo.
+    #
+    # Precisa acompanhar o ciclo e o horizonte do trade: com ciclo de 33s e TP a
+    # 0,2 ATR, os trades fecham em minutos. Um cooldown de 15 min bloqueava ~27
+    # ciclos seguidos e proibia reabrir muito depois de a posição já ter
+    # encerrado — 290 bloqueios por hora contra 18 ordens executadas.
+    signal_repeat_cooldown_minutes: int = Field(default=2, gt=0)
 
     # --- Regras FTMO --------------------------------------------------------
     ftmo_max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)

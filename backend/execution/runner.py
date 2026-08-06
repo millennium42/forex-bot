@@ -163,7 +163,26 @@ class BotRunner:
         bloqueios do runner (confiança, cooldown, margem, ATR/stop inválidos,
         risco que não cobre o lote mínimo) só existiam como log estruturado
         (`structlog`), nunca consultável pela API.
+
+        **Só grava quando o motivo muda** para aquele símbolo. Um bloqueio
+        persistente — cooldown de vários minutos com ciclo de 33s — repetia a
+        mesma linha a cada ciclo: 290 registros por hora dizendo a mesma coisa,
+        num log append-only que nunca é podado. O que interessa ao operador é a
+        transição ("passou a bloquear por cooldown"), não a repetição.
         """
+        ultimo = session.scalar(
+            select(AuditLog)
+            .where(AuditLog.event_type == AuditEventType.ORDER_BLOCKED)
+            .order_by(AuditLog.id.desc())
+            .limit(1)
+        )
+        if (
+            ultimo is not None
+            and ultimo.payload.get("symbol") == symbol
+            and ultimo.payload.get("motivo") == motivo
+        ):
+            return
+
         session.add(
             AuditLog(
                 event_type=AuditEventType.ORDER_BLOCKED,
