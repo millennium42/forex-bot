@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal
-from backend.collection.mt5_client import MT5Client, MT5ConnectionError
+from backend.collection.mt5_client import MT5Client, MT5ConnectionError, Position
 from backend.config import Settings
 from backend.execution import runner as runner_module
 from backend.execution.drawdown_guard import (
@@ -41,6 +41,9 @@ from backend.models.signal import Signal
 from backend.models.trade import Trade
 
 BUY_SIGNAL = FusedSignal(direction=Direction.BUY, score=0.5, confidence=0.8, weight_version="v1.0")
+SELL_SIGNAL = FusedSignal(
+    direction=Direction.SELL, score=-0.5, confidence=0.8, weight_version="v1.0"
+)
 
 
 def _instrumento(session: Session, client: MT5Client, symbol: str = "EURUSD") -> Instrument:
@@ -450,6 +453,80 @@ def test_executar_ordem_rejeitada_quando_risco_nao_cobre_lote_minimo(session: Se
     runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento)
 
     assert session.execute(select(Trade)).scalars().all() == []
+
+
+# -- história 34: múltiplas posições por símbolo, leitura distinta -----------
+
+
+def _posicao_aberta(symbol: str = "EURUSD", tipo: int = 0) -> Position:
+    return Position(
+        ticket=1,
+        identifier=1,
+        symbol=symbol,
+        volume=0.01,
+        type=tipo,
+        sl=1.15,
+        tp=1.16,
+        price_open=1.1545,
+    )
+
+
+def test_executar_mesmo_sinal_dois_ciclos_nao_abre_duas_posicoes(session: Session) -> None:
+    runner = _runner()
+    terminal = FakeTerminal()
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+    assert len(session.execute(select(Trade)).scalars().all()) == 1
+
+    # O ciclo seguinte enxerga a posição que o broker acabou de confirmar.
+    terminal.positions = (_posicao_aberta("EURUSD", tipo=0),)
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    assert len(session.execute(select(Trade)).scalars().all()) == 1
+
+
+def test_executar_direcao_invertida_abre_posicao_mesmo_com_uma_ja_aberta(session: Session) -> None:
+    runner = _runner()
+    terminal = FakeTerminal(positions=(_posicao_aberta("EURUSD", tipo=0),))  # BUY já aberto
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", SELL_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    trades = session.execute(select(Trade)).scalars().all()
+    assert len(trades) == 1
+    assert trades[0].side == Side.SELL
+
+
+def test_executar_mesma_direcao_apos_cooldown_abre_nova_posicao(session: Session) -> None:
+    runner = _runner(signal_repeat_cooldown_minutes=30)
+    terminal = FakeTerminal(positions=(_posicao_aberta("EURUSD", tipo=0),))  # BUY já aberto
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    session.add(
+        Trade(
+            client_request_id="antigo-1",
+            instrument_id=instrumento.id,
+            side=Side.BUY,
+            status=TradeStatus.OPEN,
+            volume=0.01,
+            stop_loss=1.0,
+            trading_mode="demo",
+            created_at=datetime.now(UTC) - timedelta(minutes=31),
+        )
+    )
+    session.commit()
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    trades = session.execute(select(Trade).order_by(Trade.id)).scalars().all()
+    assert len(trades) == 2
 
 
 # -- idempotência com granularidade de minuto (AC4) --------------------------

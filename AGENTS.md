@@ -41,6 +41,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 31 — contract_size sincronizado com o broker | ✅ |
 | 32 — Perfil agressivo: margem do broker como único teto de tamanho | ✅ |
 | 33 — Stop e alvo do perfil agressivo | ✅ |
+| 34 — Múltiplas posições por símbolo com leitura distinta | ✅ |
 
 ---
 
@@ -233,6 +234,13 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   o novo default o volume calculado passou a arredondar (`1.6666... → 1.66`) e o `pytest.approx`
   contra o valor bruto não batia mais. Ao mudar um default numérico, procure todo teste cujo *dado de
   entrada* (não só a leitura do campo) foi escolhido em função do valor antigo.
+- **Coluna `TimestampTZ` lida do banco em teste unitário (SQLite) volta naive; em Postgres volta
+  aware.** Subtrair diretamente de `datetime.now(UTC)` levanta `TypeError` só no SQLite — o mesmo
+  gotcha que `outcome_recorder._utc` já resolvia para `opened_at`/`closed_at` apareceu de novo ao
+  ler `Trade.created_at` de volta do banco para calcular um cooldown (história 34). Normalize com
+  `momento if momento.tzinfo is not None else momento.replace(tzinfo=UTC)` (ou chame o helper já
+  existente) sempre que uma coluna `TimestampTZ` lida do banco for usada em aritmética de data em
+  Python, não só em filtro `WHERE` (que não sofre o problema, porque a comparação roda no SQL).
 
 ---
 

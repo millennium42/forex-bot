@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     # cálculo do volume e o envio da ordem ao broker.
     margin_free_buffer_pct: float = Field(default=95.0, gt=0, le=100)
 
+    # --- Repetição de sinal no mesmo símbolo (história 34) ------------------
+    # Múltiplas posições no mesmo símbolo passam a ser permitidas — a trava
+    # antiga de "uma posição por símbolo" saiu. Mas o sinal técnico persiste
+    # por vários ciclos, então reabrir a MESMA direção a cada ciclo continua
+    # proibido: só é permitido de novo depois deste intervalo, contado a
+    # partir do último Trade não-rejeitado nesse símbolo+direção. Direção
+    # oposta às posições já abertas é sempre permitida, sem cooldown — é por
+    # definição uma leitura diferente.
+    signal_repeat_cooldown_minutes: int = Field(default=15, gt=0)
+
     # --- Regras FTMO --------------------------------------------------------
     ftmo_max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)
     ftmo_max_drawdown_pct: float = Field(default=10.0, gt=0, le=100)

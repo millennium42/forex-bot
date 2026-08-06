@@ -411,7 +411,7 @@
         "teste: sinal invertido no mesmo simbolo abre posicao mesmo com uma ja aberta",
         "teste: mesma direcao apos o cooldown abre nova posicao"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 35,

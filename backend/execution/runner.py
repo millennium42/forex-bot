@@ -41,7 +41,7 @@ from backend.analysis.technical_analyzer import (
     compute_indicators,
 )
 from backend.collection.documents import recent_documents
-from backend.collection.mt5_client import MT5Client, MT5ConnectionError
+from backend.collection.mt5_client import MT5Client, MT5ConnectionError, Position
 from backend.config import Settings, get_settings
 from backend.db import session_scope
 from backend.execution.drawdown_guard import (
@@ -52,10 +52,11 @@ from backend.execution.drawdown_guard import (
 from backend.execution.kill_switch import is_kill_switch_active
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
-from backend.models.enums import Direction, Side
+from backend.models.enums import Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
+from backend.models.trade import Trade
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -289,16 +290,16 @@ class BotRunner:
             logger.warning("runner.atr_invalido", symbol=symbol, atr=atr)
             return
 
-        # Uma posição por símbolo. O sinal técnico persiste por vários ciclos;
-        # sem esta trava o bot empilharia uma posição por minuto no mesmo par.
-        if self._tem_posicao_aberta(client, symbol):
-            logger.debug("runner.posicao_ja_aberta", symbol=symbol)
+        side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
+
+        # Múltiplas posições no símbolo são permitidas (história 34): o que
+        # não pode é reabrir a MESMA leitura de mercado a cada ciclo.
+        if not self._pode_abrir_posicao(session, client, symbol, side):
+            logger.debug("runner.leitura_repetida", symbol=symbol, direcao=side.value)
             return
 
         account = client.get_account_info()
         tick = client.get_tick(symbol)
-
-        side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
         entry = tick.ask if side is Side.BUY else tick.bid
 
         # Stop por volatilidade (§4 do PRD), não por distância fixa: o mesmo
@@ -396,15 +397,59 @@ class BotRunner:
 
         return abs(float(realizado)) + perda_flutuante
 
-    @staticmethod
-    def _tem_posicao_aberta(client: MT5Client, symbol: str) -> bool:
-        """Já existe posição aberta neste símbolo?
+    def _pode_abrir_posicao(
+        self, session: Session, client: MT5Client, symbol: str, side: Side
+    ) -> bool:
+        """Nova posição no símbolo exige leitura materialmente diferente das já abertas.
 
-        Sem esta trava o bot reabre a mesma direção a cada ciclo enquanto o
-        sinal persistir — e um sinal técnico costuma persistir por vários
-        minutos. Em uma hora seriam 60 posições empilhadas no mesmo par.
+        Direção oposta a qualquer posição já aberta no símbolo é, por definição,
+        uma leitura diferente — permitida sempre, sem cooldown. A MESMA direção
+        só é permitida de novo depois de `signal_repeat_cooldown_minutes` desde
+        o último `Trade` que de fato chegou ao broker (nunca `REJECTED`) nesse
+        símbolo+direção: o sinal técnico persiste por vários ciclos, e sem este
+        intervalo o bot empilharia uma posição por ciclo na mesma direção. Sem
+        `Trade` nenhum registrado ainda para essa direção, não há o que
+        proteger — permite.
         """
-        return any(p.symbol == symbol for p in client.get_positions())
+        direcoes_abertas = {
+            self._position_side(p) for p in client.get_positions() if p.symbol == symbol
+        }
+        if side not in direcoes_abertas:
+            return True
+
+        ultimo = session.execute(
+            select(Trade.created_at)
+            .join(Instrument, Trade.instrument_id == Instrument.id)
+            .where(
+                Instrument.symbol == symbol,
+                Trade.side == side,
+                Trade.status != TradeStatus.REJECTED,
+            )
+            .order_by(Trade.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if ultimo is None:
+            return True
+
+        # Postgres devolve o timestamp com tzinfo; o SQLite dos testes de
+        # unidade não. Sem normalizar, a subtração quebra com TypeError só no
+        # teste (ou só em produção, dependendo de onde o valor nasceu) — mesmo
+        # gotcha e mesma correção de `outcome_recorder._utc`.
+        if ultimo.tzinfo is None:
+            ultimo = ultimo.replace(tzinfo=UTC)
+
+        cooldown = timedelta(minutes=self.settings.signal_repeat_cooldown_minutes)
+        return datetime.now(UTC) - ultimo >= cooldown
+
+    @staticmethod
+    def _position_side(position: Position) -> Side:
+        """Direção de uma posição do broker.
+
+        MT5 usa `POSITION_TYPE_BUY=0` / `POSITION_TYPE_SELL=1` — os mesmos
+        valores de `ORDER_TYPE_BUY`/`ORDER_TYPE_SELL` já usados no restante do
+        módulo, então o mapeamento é direto.
+        """
+        return Side.BUY if position.type == 0 else Side.SELL
 
     @staticmethod
     def _calcular_volume(
