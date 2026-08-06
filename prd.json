@@ -385,7 +385,7 @@
         "kill switch diario e drawdown do pico continuam bloqueando o ciclo",
         "testes antigos de exposicao/risco por trade atualizados ou removidos com justificativa"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 33,
@@ -397,7 +397,7 @@
         "docstring registra o win rate de breakeven implicado pelo RR configurado",
         "teste: SL e TP derivados do ATR com os multiplicadores configurados"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 34,
@@ -411,7 +411,7 @@
         "teste: sinal invertido no mesmo simbolo abre posicao mesmo com uma ja aberta",
         "teste: mesma direcao apos o cooldown abre nova posicao"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 35,
@@ -425,7 +425,7 @@
         "teste com series fixtures deterministicas por fator (alta, baixa, lateral)",
         "signal.inputs passa a registrar todos os fatores para auditoria posterior"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 36,
@@ -439,7 +439,7 @@
         "remover abas/graficos que nao tem dado real por tras",
         "tsc --noEmit e eslint limpos"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 37,
@@ -451,7 +451,23 @@
         "estado atual: equity, pico, drawdown, kill switch, posicoes abertas",
         "sem PII e sem credencial na saida"
       ],
-      "passes": false
+      "passes": true
+    },
+    {
+      "id": 38,
+      "title": "Perfil de lancamento: 33s, 4 pares, sem sentimento",
+      "description": "O bot passa a ser lancado com os parametros de operacao no proprio config, nao em argumento de linha de comando: ciclo de 33 segundos, os 4 pares em que o calculo de risco e correto (EURUSD, GBPUSD, AUDUSD, NZDUSD - os unicos com USD como moeda de cotacao, igual a moeda da conta), e sentimento DESLIGADO por decisao do operador. Nos outros 122 pares do broker o risco sairia calculado na moeda de cotacao e comparado com um teto na moeda da conta, sem conversao.",
+      "acceptanceCriteria": [
+        "CYCLE_INTERVAL_SECONDS na config, default 33",
+        "TRADING_SYMBOLS na config, default EURUSD,GBPUSD,AUDUSD,NZDUSD",
+        "SENTIMENT_ENABLED na config, default false; desligado nao consulta documento nem carrega o analisador",
+        "run_bot.py usa a config como default; --symbols e --interval continuam podendo sobrescrever para diagnostico",
+        "com sentimento desligado o Signal grava sentiment_score e sentiment_confidence nulos, nunca zero forjado",
+        "teste: sentimento desligado nao chama o analisador nem consulta documentos",
+        "teste: os 4 pares default sao exatamente os de moeda de cotacao USD",
+        "docstring registra por que sao esses 4 e o que quebra nos outros"
+      ],
+      "passes": true
     }
   ]
 }

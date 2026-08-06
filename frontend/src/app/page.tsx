@@ -16,12 +16,14 @@ import {
   getAccountStatus,
   getAuditLog,
   getKillSwitchStatus,
+  getOpenPositions,
   getPromotionStatus,
   getSignals,
   getTradeHistory,
   type AccountStatus,
   type AuditEntry,
   type KillSwitchStatus,
+  type OpenPosition,
   type PromotionStatus,
   type SignalRecord,
   type TradeRecord,
@@ -56,6 +58,7 @@ export default function Dashboard() {
   const [account, setAccount] = useState<AccountStatus>(DISCONNECTED_ACCOUNT);
   const [trades, setTrades] = useState<TradeRecord[]>([]);
   const [signals, setSignals] = useState<SignalRecord[]>([]);
+  const [openPositions, setOpenPositions] = useState<OpenPosition[]>([]);
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [promotion, setPromotion] = useState<PromotionStatus | null>(null);
   const [killSwitch, setKillSwitch] = useState<KillSwitchStatus>({ active: false });
@@ -72,6 +75,7 @@ export default function Dashboard() {
       getAuditLog(undefined, 100),
       getPromotionStatus(),
       getKillSwitchStatus(),
+      getOpenPositions(),
     ]);
 
     if (results[0].status === "fulfilled") setAccount(results[0].value);
@@ -82,6 +86,8 @@ export default function Dashboard() {
     if (results[3].status === "fulfilled") setAuditEntries(results[3].value);
     if (results[4].status === "fulfilled") setPromotion(results[4].value);
     if (results[5].status === "fulfilled") setKillSwitch(results[5].value);
+    if (results[6].status === "fulfilled") setOpenPositions(results[6].value);
+    else setOpenPositions([]);
   }, []);
 
   useEffect(() => {
@@ -102,6 +108,8 @@ export default function Dashboard() {
           account={account}
           trades={trades}
           signals={signals}
+          openPositions={openPositions}
+          auditEntries={auditEntries}
           promotion={promotion}
           killSwitchActive={killSwitch.active}
           palette={palette}

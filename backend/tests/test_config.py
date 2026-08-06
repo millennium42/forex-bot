@@ -53,6 +53,26 @@ def test_limites_de_risco_sao_validados() -> None:
         _settings(max_daily_loss_pct=101)
 
 
+def test_default_do_teto_de_volume_por_ordem_e_dois_lotes() -> None:
+    assert _settings().volume_max_per_order_lots == 2.0
+
+
+def test_teto_de_volume_por_ordem_e_validado() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _settings(volume_max_per_order_lots=0)
+
+
+def test_folga_de_margem_e_validada() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        _settings(margin_free_buffer_pct=0)
+    with pytest.raises(ValidationError):
+        _settings(margin_free_buffer_pct=101)
+
+
 def test_listas_derivadas_de_env() -> None:
     s = _settings(news_rss_feeds="a, b ,,c", twitter_cashtags="$EURUSD, $GBPUSD")
     assert s.rss_feed_list == ["a", "b", "c"]

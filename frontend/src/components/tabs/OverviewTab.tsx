@@ -1,14 +1,16 @@
 "use client";
 
 import { Activity, DollarSign, Power, ShieldCheck, Target } from "lucide-react";
-import { EquityCurveChart } from "@/components/charts/EquityCurveChart";
 import { HourHeatmapChart } from "@/components/charts/HourHeatmapChart";
 import { PnlHistogramChart } from "@/components/charts/PnlHistogramChart";
 import { SentimentVsTechnicalChart } from "@/components/charts/SentimentVsTechnicalChart";
 import { WinRateByPairChart } from "@/components/charts/WinRateByPairChart";
+import { BlockReasonCard } from "@/components/BlockReasonCard";
 import { InsightCard } from "@/components/InsightCard";
 import { MetricCard } from "@/components/MetricCard";
-import type { AccountStatus, PromotionStatus, SignalRecord, TradeRecord } from "@/lib/api";
+import { OpenPositionsCard } from "@/components/OpenPositionsCard";
+import type { AccountStatus, AuditEntry, OpenPosition, PromotionStatus, SignalRecord, TradeRecord } from "@/lib/api";
+import { lastBlockReason } from "@/lib/blockReason";
 import { formatCurrency, formatPercent } from "@/lib/format";
 import { computeInsights } from "@/lib/insights";
 import type { ChartPalette } from "@/lib/palette";
@@ -23,6 +25,8 @@ export function OverviewTab({
   account,
   trades,
   signals,
+  openPositions,
+  auditEntries,
   promotion,
   killSwitchActive,
   palette,
@@ -31,6 +35,8 @@ export function OverviewTab({
   account: AccountStatus;
   trades: TradeRecord[];
   signals: SignalRecord[];
+  openPositions: OpenPosition[];
+  auditEntries: AuditEntry[];
   promotion: PromotionStatus | null;
   killSwitchActive: boolean;
   palette: ChartPalette;
@@ -40,6 +46,7 @@ export function OverviewTab({
   const pnlToday = closedToday.reduce((sum, t) => sum + (t.outcome?.pnl ?? 0), 0);
   const winRateCriterion = promotion?.criteria.find((c) => c.key === "win_rate");
   const insights = computeInsights(trades);
+  const blockInfo = lastBlockReason(auditEntries);
 
   return (
     <div className="space-y-6">
@@ -78,14 +85,13 @@ export function OverviewTab({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 animate-slide-up">
+        <BlockReasonCard info={blockInfo} />
         {insights.map((insight) => (
           <InsightCard key={insight.id} insight={insight} />
         ))}
       </div>
 
-      <div className="animate-slide-up">
-        <EquityCurveChart trades={trades} currentEquity={account.equity} currency={account.currency} palette={palette} />
-      </div>
+      <OpenPositionsCard positions={openPositions} currency={account.currency} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-slide-up">
         <PnlHistogramChart trades={trades} currency={account.currency} palette={palette} />

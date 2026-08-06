@@ -2,16 +2,19 @@
 
 Este é o único módulo onde o pipeline inteiro se encontra, e por isso é onde um
 valor inventado causa mais estrago: o risk manager só protege se os números que
-recebe forem reais. Nada aqui é hard-coded — equity vem do broker, exposição
-vem das posições abertas, perda do dia vem do banco, e o stop vem da
-volatilidade medida.
+recebe forem reais. Nada aqui é hard-coded — equity vem do broker, perda do dia
+vem do banco, e o stop vem da volatilidade medida.
 
-Postura de alavancagem: **dimensionada pelo risco, não pelo lote**. O volume da
-ordem é derivado de `MAX_RISK_PER_TRADE_PCT` do equity e da distância do stop
-(história 30) — quanto mais volátil o par, menor o lote para o mesmo risco
-monetário. Quando o risco configurado não paga nem o lote mínimo do broker, a
-ordem é rejeitada em vez de sair sub-dimensionada (lote mínimo) ou
-sobre-arriscada (arredondar para cima).
+Postura de alavancagem: **dimensionada pelo risco, com teto de tamanho fixo**.
+O volume de partida é derivado de `MAX_RISK_PER_TRADE_PCT` do equity e da
+distância do stop (história 30) — quanto mais volátil o par, menor o lote para
+o mesmo risco monetário. A partir daí (história 32, perfil agressivo), o único
+que ainda pode reduzir esse volume é `VOLUME_MAX_PER_ORDER_LOTS` (teto fixo) e
+a margem livre real da conta — risco por trade e exposição agregada não
+bloqueiam mais ordem. Quando o risco configurado não paga nem o lote mínimo do
+broker, ou a margem livre não cobre nem o lote mínimo, a ordem é rejeitada em
+vez de sair sub-dimensionada (lote mínimo) ou sobre-arriscada (arredondar para
+cima).
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ import math
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy import func, select
@@ -38,7 +41,7 @@ from backend.analysis.technical_analyzer import (
     compute_indicators,
 )
 from backend.collection.documents import recent_documents
-from backend.collection.mt5_client import MT5Client, MT5ConnectionError
+from backend.collection.mt5_client import MT5Client, MT5ConnectionError, Position
 from backend.config import Settings, get_settings
 from backend.db import session_scope
 from backend.execution.drawdown_guard import (
@@ -49,10 +52,12 @@ from backend.execution.drawdown_guard import (
 from backend.execution.kill_switch import is_kill_switch_active
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
-from backend.models.enums import Direction, Side
+from backend.models.audit_log import AuditLog
+from backend.models.enums import AuditEventType, Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
+from backend.models.trade import Trade
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -63,14 +68,6 @@ logger = structlog.get_logger(__name__)
 # independente do timeframe configurado (`settings.timeframe`): a contagem é
 # em número de candles, não em tempo.
 CANDLES_POR_CICLO = 120
-
-# Take profit a 2x a distância do stop: relação risco/retorno de 1:2.
-#
-# Este número não é cosmético. Com RR de 1:2 o breakeven exige ~33% de acerto;
-# invertê-lo para 0.2 (arriscar 5 para ganhar 1) exigiria 83,3% — patamar que
-# nenhuma estratégia técnica sustenta. Alterar aqui muda a viabilidade
-# matemática do sistema inteiro, não só o tamanho do alvo.
-RR_RATIO = 2.0
 
 
 class BotRunner:
@@ -155,6 +152,26 @@ class BotRunner:
                 logger.error("runner.erro_no_simbolo", symbol=symbol, erro=str(exc))
                 session.rollback()
 
+    def _registrar_bloqueio(
+        self, session: Session, motivo: str, symbol: str, **detalhes: Any
+    ) -> None:
+        """Grava por que uma ordem não saiu (história 36).
+
+        O dashboard mostra o motivo mais recente. Kill switch e drawdown já
+        persistem seu próprio motivo (históricas 18/29, eventos
+        `KILL_SWITCH_TRIGGERED`/`DRAWDOWN_LIMIT_TRIGGERED`); os demais
+        bloqueios do runner (confiança, cooldown, margem, ATR/stop inválidos,
+        risco que não cobre o lote mínimo) só existiam como log estruturado
+        (`structlog`), nunca consultável pela API.
+        """
+        session.add(
+            AuditLog(
+                event_type=AuditEventType.ORDER_BLOCKED,
+                payload={"motivo": motivo, "symbol": symbol, **detalhes},
+            )
+        )
+        session.commit()
+
     # -- um símbolo ----------------------------------------------------------
     def _process_symbol(
         self,
@@ -196,6 +213,13 @@ class BotRunner:
             logger.info(
                 "runner.confianca_insuficiente",
                 symbol=symbol,
+                confianca=round(fused.confidence, 3),
+                limiar=self.settings.min_signal_confidence,
+            )
+            self._registrar_bloqueio(
+                session,
+                "confianca_insuficiente",
+                symbol,
                 confianca=round(fused.confidence, 3),
                 limiar=self.settings.min_signal_confidence,
             )
@@ -252,7 +276,14 @@ class BotRunner:
         documento ou backend de NLP indisponível resultam em `None`, nunca em
         score neutro forjado — o `fuse_signals` já sabe degradar a confiança
         quando o sentimento é `None`.
+
+        Desligado (`SENTIMENT_ENABLED=false`), nem consulta documento nem
+        carrega o analisador: a decisão fica puramente técnica e o `Signal`
+        grava sentimento nulo, não zero forjado.
         """
+        if not self.settings.sentiment_enabled:
+            return None
+
         desde = datetime.now(UTC) - timedelta(minutes=self.settings.sentiment_lookback_minutes)
         documentos = recent_documents(session, symbol, desde)
         if not documentos:
@@ -292,30 +323,32 @@ class BotRunner:
             # ATR zero significa volatilidade não medida. Sem ela não há stop
             # defensável, e ordem sem stop defensável não sai.
             logger.warning("runner.atr_invalido", symbol=symbol, atr=atr)
+            self._registrar_bloqueio(session, "atr_invalido", symbol, atr=atr)
             return
 
-        # Uma posição por símbolo. O sinal técnico persiste por vários ciclos;
-        # sem esta trava o bot empilharia uma posição por minuto no mesmo par.
-        if self._tem_posicao_aberta(client, symbol):
-            logger.debug("runner.posicao_ja_aberta", symbol=symbol)
+        side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
+
+        # Múltiplas posições no símbolo são permitidas (história 34): o que
+        # não pode é reabrir a MESMA leitura de mercado a cada ciclo.
+        if not self._pode_abrir_posicao(session, client, symbol, side):
+            logger.debug("runner.leitura_repetida", symbol=symbol, direcao=side.value)
+            self._registrar_bloqueio(session, "cooldown", symbol, direcao=side.value)
             return
 
         account = client.get_account_info()
         tick = client.get_tick(symbol)
-
-        side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
         entry = tick.ask if side is Side.BUY else tick.bid
 
         # Stop por volatilidade (§4 do PRD), não por distância fixa: o mesmo
         # número de pontos significa coisas diferentes em pares diferentes.
         distancia_sl = atr * self.settings.atr_sl_multiplier
+        distancia_tp = distancia_sl * self.settings.take_profit_rr
         stop_loss = entry - distancia_sl if side is Side.BUY else entry + distancia_sl
-        take_profit = (
-            entry + distancia_sl * RR_RATIO if side is Side.BUY else entry - distancia_sl * RR_RATIO
-        )
+        take_profit = entry + distancia_tp if side is Side.BUY else entry - distancia_tp
 
         if stop_loss <= 0:
             logger.warning("runner.stop_invalido", symbol=symbol, stop_loss=stop_loss)
+            self._registrar_bloqueio(session, "stop_invalido", symbol, stop_loss=stop_loss)
             return
 
         volume = self._calcular_volume(
@@ -327,11 +360,19 @@ class BotRunner:
                 symbol=symbol,
                 min_volume=instrument.min_volume,
             )
+            self._registrar_bloqueio(
+                session, "risco_insuficiente", symbol, min_volume=instrument.min_volume
+            )
             return
 
+        # Teto duro de tamanho por ordem (história 32): nunca acima do que o
+        # operador fixou, independente do que o risco calculado pediria.
+        volume = min(volume, self.settings.volume_max_per_order_lots)
+
         # Previne erro "No money" limitando o volume à margem livre real da conta
+        folga_margem = self.settings.margin_free_buffer_pct / 100.0
         margin_req_per_lot = (instrument.contract_size * entry) / account.leverage
-        max_vol_by_margin = (account.margin_free * 0.95) / margin_req_per_lot
+        max_vol_by_margin = (account.margin_free * folga_margem) / margin_req_per_lot
         passos_margem = math.floor(max_vol_by_margin / instrument.volume_step + 1e-9)
         volume_limite_margem = round(passos_margem * instrument.volume_step, 8)
         volume = min(volume, volume_limite_margem)
@@ -342,9 +383,10 @@ class BotRunner:
                 symbol=symbol,
                 margin_free=account.margin_free,
             )
+            self._registrar_bloqueio(
+                session, "margem_insuficiente", symbol, margin_free=account.margin_free
+            )
             return
-
-        risco_monetario = distancia_sl * volume * instrument.contract_size
 
         order_manager.place_order(
             request=OrderRequest(
@@ -360,8 +402,6 @@ class BotRunner:
             instrument_id=instrument.id,
             equity=account.equity,
             daily_loss=self._perda_do_dia(session, client),
-            current_exposure_monetary=self._exposicao_aberta_monetaria(client),
-            trade_monetary_risk=risco_monetario,
             signal_id=signal_id,
         )
 
@@ -401,50 +441,59 @@ class BotRunner:
 
         return abs(float(realizado)) + perda_flutuante
 
-    def _exposicao_aberta_monetaria(self, client: MT5Client) -> float:
-        """Risco agregado das posições abertas, em valor monetário.
+    def _pode_abrir_posicao(
+        self, session: Session, client: MT5Client, symbol: str, side: Side
+    ) -> bool:
+        """Nova posição no símbolo exige leitura materialmente diferente das já abertas.
 
-        **Risco, não nocional.** É quanto se perde se todos os stops forem
-        atingidos — a mesma unidade do limite por trade, como o §4 do PRD
-        pressupõe ao fixar 1% por trade e 3% no total.
-
-        Medir nocional aqui tornava o limite inatingível: 3% de nocional numa
-        conta de 100k é 0,02 lote, menos que o mínimo do broker. O sintoma era
-        o limite parecer quebrado; a reação foi desativá-lo.
-
-        Vem do broker, não do banco: posição aberta por fora do bot consome
-        risco da conta do mesmo jeito.
-
-        Posição **sem stop** é o caso perigoso — a perda é ilimitada e não há
-        número honesto a somar. Usa-se o nocional como piso: é o pior caso se
-        o preço for a zero, e força o limite a barrar em vez de ignorar.
+        Direção oposta a qualquer posição já aberta no símbolo é, por definição,
+        uma leitura diferente — permitida sempre, sem cooldown. A MESMA direção
+        só é permitida de novo depois de `signal_repeat_cooldown_minutes` desde
+        o último `Trade` que de fato chegou ao broker (nunca `REJECTED`) nesse
+        símbolo+direção: o sinal técnico persiste por vários ciclos, e sem este
+        intervalo o bot empilharia uma posição por ciclo na mesma direção. Sem
+        `Trade` nenhum registrado ainda para essa direção, não há o que
+        proteger — permite.
         """
-        risco_total = 0.0
-        for p in client.get_positions():
-            try:
-                contract_size = client.get_symbol_info(p.symbol).contract_size
-            except MT5ConnectionError:
-                # Símbolo sem metadados: assume o contrato padrão em vez de
-                # ignorar a posição. Subestimar risco é o erro perigoso.
-                contract_size = 100_000.0
+        direcoes_abertas = {
+            self._position_side(p) for p in client.get_positions() if p.symbol == symbol
+        }
+        if side not in direcoes_abertas:
+            return True
 
-            # Sem stop: sem perda máxima definida. Conta o nocional inteiro para
-            # que o limite dispare, em vez de somar zero e ignorar a posição.
-            distancia = abs(p.price_open - p.sl) if p.sl and p.sl > 0 else p.price_open
+        ultimo = session.execute(
+            select(Trade.created_at)
+            .join(Instrument, Trade.instrument_id == Instrument.id)
+            .where(
+                Instrument.symbol == symbol,
+                Trade.side == side,
+                Trade.status != TradeStatus.REJECTED,
+            )
+            .order_by(Trade.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if ultimo is None:
+            return True
 
-            risco_total += abs(distancia * p.volume * contract_size)
+        # Postgres devolve o timestamp com tzinfo; o SQLite dos testes de
+        # unidade não. Sem normalizar, a subtração quebra com TypeError só no
+        # teste (ou só em produção, dependendo de onde o valor nasceu) — mesmo
+        # gotcha e mesma correção de `outcome_recorder._utc`.
+        if ultimo.tzinfo is None:
+            ultimo = ultimo.replace(tzinfo=UTC)
 
-        return risco_total
+        cooldown = timedelta(minutes=self.settings.signal_repeat_cooldown_minutes)
+        return datetime.now(UTC) - ultimo >= cooldown
 
     @staticmethod
-    def _tem_posicao_aberta(client: MT5Client, symbol: str) -> bool:
-        """Já existe posição aberta neste símbolo?
+    def _position_side(position: Position) -> Side:
+        """Direção de uma posição do broker.
 
-        Sem esta trava o bot reabre a mesma direção a cada ciclo enquanto o
-        sinal persistir — e um sinal técnico costuma persistir por vários
-        minutos. Em uma hora seriam 60 posições empilhadas no mesmo par.
+        MT5 usa `POSITION_TYPE_BUY=0` / `POSITION_TYPE_SELL=1` — os mesmos
+        valores de `ORDER_TYPE_BUY`/`ORDER_TYPE_SELL` já usados no restante do
+        módulo, então o mapeamento é direto.
         """
-        return any(p.symbol == symbol for p in client.get_positions())
+        return Side.BUY if position.type == 0 else Side.SELL
 
     @staticmethod
     def _calcular_volume(

@@ -23,17 +23,28 @@ from backend.execution.runner import BotRunner
 
 
 def main() -> int:
+    # Os defaults vêm da config, não daqui: quem manda nos parâmetros de
+    # operação é o `.env`. Os argumentos existem para diagnóstico pontual.
+    settings = get_settings()
     parser = argparse.ArgumentParser(description="Motor autônomo do forex-bot")
-    parser.add_argument("--symbols", nargs="+", default=["EURUSD", "GBPUSD"])
-    parser.add_argument("--interval", type=int, default=60, help="segundos entre ciclos")
+    parser.add_argument("--symbols", nargs="+", default=settings.symbol_list)
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=settings.cycle_interval_seconds,
+        help="segundos entre ciclos",
+    )
     parser.add_argument(
         "--cycles", type=int, default=None, help="número de ciclos; omitido roda indefinidamente"
     )
     args = parser.parse_args()
 
-    settings = get_settings()
     modo = settings.effective_trading_mode.value
-    print(f"forex-bot | modo={modo} | símbolos={' '.join(args.symbols)}")
+    sentimento = "on" if settings.sentiment_enabled else "off"
+    print(
+        f"forex-bot | modo={modo} | ciclo={args.interval}s | sentimento={sentimento} "
+        f"| símbolos={' '.join(args.symbols)}"
+    )
     if settings.is_real_trading:
         print("ATENÇÃO: modo REAL habilitado. Ordens usarão capital real.")
 

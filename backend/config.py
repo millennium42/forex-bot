@@ -63,16 +63,44 @@ class Settings(BaseSettings):
     timeframe: str = "M5"
 
     # --- Regras de risco (§4) ----------------------------------------------
-    # Volume da ordem é derivado deste percentual (história 30), não mais
-    # sempre o lote mínimo — 0.5% é o teto conservador até haver amostra real
-    # de resultado para recalibrar.
+    # Volume da ordem é derivado deste percentual (história 30) para
+    # dimensionar o lote pelo risco — não é mais usado por `risk_manager` como
+    # teto que bloqueia ordem (história 32: só a margem livre real do broker e
+    # `volume_max_per_order_lots` limitam tamanho).
     max_risk_per_trade_pct: float = Field(default=0.5, gt=0, le=100)
-    # Risco agregado de todas as posições abertas, mesma unidade do limite por
-    # trade. 3% / 0,5% = até 6 posições simultâneas no pior caso.
-    max_total_exposure_pct: float = Field(default=3.0, gt=0, le=100)
     max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)
-    atr_sl_multiplier: float = Field(default=2.0, gt=0)
+    # Perfil agressivo (história 33, a pedido do operador): stop largo (1.0x
+    # ATR) e alvo curto (0.2x ATR), scalping. TAKE_PROFIT_RR é a razão
+    # take_profit/stop_loss; o win rate de breakeven implicado é
+    # 1 / (1 + TAKE_PROFIT_RR) — com o default 0.2, isso é 1/1.2 ≈ 83,3%.
+    # Não altere este número sem entender que ele muda a viabilidade
+    # matemática do sistema inteiro, não só o tamanho do alvo.
+    atr_sl_multiplier: float = Field(default=1.0, gt=0)
+    take_profit_rr: float = Field(default=0.2, gt=0)
     macro_blackout_minutes: int = Field(default=15, ge=0)
+
+    # --- Perfil agressivo (história 32) -------------------------------------
+    # A pedido do operador, os tetos artificiais de TAMANHO saem de cena:
+    # risco por trade e exposição agregada deixam de bloquear ordem em
+    # `risk_manager`. O único teto de tamanho que resta é este valor fixo de
+    # lotes — nunca calculado a partir de risco — mais a margem livre real da
+    # conta. Kill switch de perda diária e drawdown do pico continuam intactos
+    # porque protegem a conta, não limitam o tamanho da ordem.
+    volume_max_per_order_lots: float = Field(default=2.0, gt=0)
+    # Folga sobre a margem livre real antes de calcular o volume máximo
+    # permitido: nunca 100%, para sobrar espaço para o preço variar entre o
+    # cálculo do volume e o envio da ordem ao broker.
+    margin_free_buffer_pct: float = Field(default=95.0, gt=0, le=100)
+
+    # --- Repetição de sinal no mesmo símbolo (história 34) ------------------
+    # Múltiplas posições no mesmo símbolo passam a ser permitidas — a trava
+    # antiga de "uma posição por símbolo" saiu. Mas o sinal técnico persiste
+    # por vários ciclos, então reabrir a MESMA direção a cada ciclo continua
+    # proibido: só é permitido de novo depois deste intervalo, contado a
+    # partir do último Trade não-rejeitado nesse símbolo+direção. Direção
+    # oposta às posições já abertas é sempre permitida, sem cooldown — é por
+    # definição uma leitura diferente.
+    signal_repeat_cooldown_minutes: int = Field(default=15, gt=0)
 
     # --- Regras FTMO --------------------------------------------------------
     ftmo_max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)
@@ -97,7 +125,20 @@ class Settings(BaseSettings):
     twitter_bearer_token: str | None = None
     twitter_cashtags: str = ""
 
+    # --- Operação -----------------------------------------------------------
+    # Pares em que o cálculo de risco é correto: os únicos com USD como moeda de
+    # cotação, igual à moeda da conta. Nos outros 122 pares que o broker oferece,
+    # `risco = distância_sl * volume * contract_size` sai na moeda de cotação e
+    # é comparado com um teto na moeda da conta, sem conversão — o número
+    # comparado não é risco real. Não amplie esta lista sem converter a moeda.
+    trading_symbols: str = "EURUSD,GBPUSD,AUDUSD,NZDUSD"
+    cycle_interval_seconds: int = Field(default=33, gt=0)
+
     # --- NLP ----------------------------------------------------------------
+    # Desligado por decisão do operador: a decisão passa a ser puramente técnica.
+    # Consequência conhecida: `fuse_signals` degrada a confiança quando falta uma
+    # ponta, então o teto de confiança volta a ser o peso técnico (0,7).
+    sentiment_enabled: bool = False
     sentiment_model: str = "ProsusAI/finbert"
     sentiment_cache_ttl_seconds: int = 86_400
     sentiment_lookback_minutes: int = Field(default=60, gt=0)
@@ -154,6 +195,11 @@ class Settings(BaseSettings):
     @property
     def rss_feed_list(self) -> list[str]:
         return [f.strip() for f in self.news_rss_feeds.split(",") if f.strip()]
+
+    @property
+    def symbol_list(self) -> list[str]:
+        """Pares que o bot opera. Ver o comentário em `trading_symbols`."""
+        return [s.strip().upper() for s in self.trading_symbols.split(",") if s.strip()]
 
     @property
     def cashtag_list(self) -> list[str]:

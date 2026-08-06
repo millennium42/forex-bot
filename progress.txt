@@ -45,6 +45,11 @@
   campos ou nenhum" no mesmo ponto (`_get_or_create_instrument`). Adicionar um campo novo a
   SymbolInfo sem incluir na comparacao/atualizacao ali deixa o registro local desatualizado em
   silencio - so aparece quando o valor errado entra numa conta de risco (historia 31).
+- Coluna `TimestampTZ` lida de volta do banco em teste unitario (SQLite) vem naive; em Postgres
+  vem aware. Subtrair direto de `datetime.now(UTC)` estoura `TypeError` so no SQLite. Normalize com
+  `momento if momento.tzinfo is not None else momento.replace(tzinfo=UTC)` (padrao ja existente em
+  `outcome_recorder._utc`) sempre que o valor for usado em aritmetica Python, nao so em filtro
+  `WHERE` (que roda no SQL e nao sofre o problema).
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -658,3 +663,151 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     (`runner.py`), não na leitura do broker — vale conferir os dois lados ao investigar um campo de
     `SymbolInfo` que parece não estar chegando onde devia.
 ---
+Nenhuma historia concluida na iteracao 1. Parando para inspecao.
+
+## [2026-08-06] — História 33: Stop e alvo do perfil agressivo
+- `Settings.atr_sl_multiplier` mudou o default de 2.0 para 1.0 (stop mais largo, em ATR). O antigo
+  `RR_RATIO = 2.0` hard-coded em `runner.py` virou `Settings.take_profit_rr` (default 0.2) — o alvo
+  agora é 0.2x a distância do stop, não 2x: scalping de alvo curto e stop largo, a pedido do
+  operador. O docstring do campo em `config.py` registra a fórmula do win rate de breakeven
+  (`1 / (1 + take_profit_rr)`) e o número implicado pelo default (≈83,3%), para que ninguém altere
+  o valor sem entender o custo — o mesmo aviso que já existia como comentário solto em `runner.py`
+  antes de virar campo de config.
+- `_executar` calcula `distancia_tp = distancia_sl * self.settings.take_profit_rr` em vez de usar a
+  constante de módulo.
+- Arquivos alterados: `backend/config.py` (`atr_sl_multiplier` default 1.0, `take_profit_rr` novo),
+  `backend/execution/runner.py` (remove `RR_RATIO`, usa os dois campos de `Settings`),
+  `backend/tests/test_runner.py` (teste existente de SL/TP atualizado para ler `take_profit_rr` em
+  vez da constante removida; teste novo `test_executar_sl_tp_usam_multiplicadores_configurados` com
+  multiplicadores não-default, cobrindo a AC de "SL e TP derivados do ATR com os multiplicadores
+  configurados"; ATR de `test_executar_volume_e_derivado_do_risco` recalibrado — ver Aprendizados).
+- **Aprendizados para as próximas iterações:**
+  - Ver o padrão novo no topo do arquivo (AGENTS.md → Gotchas): mudar um default numérico de config
+    exige procurar não só os testes que leem o *nome* do campo, mas os que fixam um *valor de
+    entrada* calibrado para o default antigo. `test_executar_volume_e_derivado_do_risco` (história
+    30) tinha ATR escolhido para o volume calculado cair num múltiplo exato do `volume_step` do
+    broker sob o `atr_sl_multiplier` antigo (2.0); com o novo (1.0) o resultado passou a arredondar
+    e o `pytest.approx` contra o valor bruto (não arredondado) parou de bater. Corrigido recalibrando
+    o ATR da fixture, não a lógica de produção.
+  - `prd.json` já tinha a história 32 (perfil agressivo — margem do broker como único teto de
+    tamanho) marcada `passes: true` pelos commits anteriores, mas a tabela de estado do AGENTS.md
+    não tinha sido atualizada com essa linha — corrigido nesta iteração junto com a 33.
+---
+
+## [2026-08-06] — História 34: Múltiplas posições por símbolo com leitura distinta
+- A trava antiga `_tem_posicao_aberta` (uma posição por símbolo, sem olhar direção) saiu.
+  `_executar` agora chama `_pode_abrir_posicao(session, client, symbol, side)`: direção oposta a
+  qualquer posição já aberta no símbolo é sempre permitida (leitura diferente por definição, sem
+  cooldown); a MESMA direção só é permitida de novo depois de `signal_repeat_cooldown_minutes`
+  (novo campo em `Settings`, default 15) desde o último `Trade` não-`REJECTED` daquele
+  símbolo+direção — lido do banco a cada chamada, nunca de estado em memória. Sem nenhum `Trade`
+  registrado ainda para essa direção, não há o que proteger, então permite.
+- `_position_side` (novo staticmethod) traduz `Position.type` (inteiro cru do MT5) para `Side`:
+  `POSITION_TYPE_BUY=0`/`POSITION_TYPE_SELL=1`, os mesmos valores que `ORDER_TYPE_BUY`/`SELL` já
+  usados no resto do módulo.
+- Arquivos alterados: `backend/config.py` (`signal_repeat_cooldown_minutes`), `backend/execution/
+  runner.py` (`_pode_abrir_posicao`, `_position_side`, remoção de `_tem_posicao_aberta`, `side`
+  calculado antes da trava em `_executar`), `backend/tests/test_runner_limites.py` (reescrito:
+  unitários de `_pode_abrir_posicao` — sem posição, direção oposta, mesma direção sem histórico,
+  dentro/depois do cooldown, `Trade` `REJECTED` não conta, outro símbolo não interfere),
+  `backend/tests/test_runner.py` (3 testes de integração via `_executar` cobrindo literalmente as
+  ACs: dois ciclos com o mesmo sinal não duplicam, direção invertida abre mesmo com uma já aberta,
+  mesma direção após o cooldown abre nova).
+- **Aprendizados para as próximas iterações:**
+  - Ver o gotcha novo no topo do arquivo (AGENTS.md → Gotchas): `TimestampTZ` lido do banco em
+    SQLite volta naive, subtração direta com `datetime.now(UTC)` quebra só no teste unitário — já
+    tinha aparecido antes em `outcome_recorder`, reaproveitei a mesma normalização.
+  - `Trade` linha existe até para ordem `REJECTED` (risk manager ou broker recusaram) —
+    `order_manager.place_order` grava o `Trade` com `status=REJECTED` antes de saber o desfecho. A
+    query do cooldown filtra `Trade.status != TradeStatus.REJECTED` explicitamente: uma ordem
+    barrada não é uma "leitura executada", não deveria bloquear a próxima tentativa na mesma
+    direção.
+  - Testar o cooldown via `_executar` exige simular o broker refletindo a posição recém-aberta
+    manualmente (`terminal.positions = (...)` entre as duas chamadas) — `FakeTerminal.positions` é
+    estático, `order_send` não o atualiza sozinho, ao contrário do banco (que reflete o `Trade`
+    real via o mesmo `session`).
+  - `Trade.created_at` pode ser setado explicitamente no construtor mesmo tendo `server_default`
+    (só o INSERT sem valor explícito cai no default do banco) — útil para simular um sinal "antigo"
+    sem precisar mockar `datetime.now()` do módulo inteiro.
+---
+
+## [2026-08-06] — História 35: Alpha factors clássicos no technical analyzer
+- Adicionados 4 alpha factors ao `technical_analyzer`: `momentum` (média multi-janela de
+  5/10/20 candles, normalizada por ATR), `mean_reversion` (z-score do preço contra SMA de 10
+  candles, invertido), `relative_volatility` (expansão do ATR frente à própria média móvel de 20
+  candles, direcionada pelo lado do preço em relação à SMA curta) e `trend_strength` (ADX pondera
+  a direção dada por +DI/-DI, via `ta.trend.ADXIndicator`). Todos entram em `components` na mesma
+  média que já tinha `rsi`/`macd`/`bollinger` — sem peso próprio, sem dependência nova.
+- Arquivos alterados: `backend/analysis/technical_analyzer.py` (série crua nova em
+  `IndicatorSnapshot`, calculada via `pandas`/`ta` dentro de `compute_indicators`; 4 funções
+  `_score_*` novas; `_components` agora devolve 7 chaves), `backend/tests/test_technical_analyzer.py`
+  (fixture `expanding_trend` para testar `relative_volatility`, testes unitários por fator e
+  testes de integração alta/baixa/lateral), `backend/tests/test_runner.py` (3 testes recalibrados,
+  ver aprendizado abaixo).
+- **Aprendizados para as próximas iterações:**
+  - Nenhuma mudança foi necessária em `runner.py`/`signal_fusion.py`: `signal.inputs.
+    technical_components` já grava o dict `components` inteiro (história 24), então os 4 fatores
+    novos entram na auditoria de graça — a AC "signal.inputs passa a registrar todos os fatores"
+    saiu de graça do desenho existente.
+  - Campo novo em `IndicatorSnapshot` (dataclass `frozen=True, slots=True`) ganhou `default=0.0`
+    para não quebrar as duas construções manuais em `test_runner_sentimento.py` que não citam os
+    campos novos — `compute_indicators` real sempre preenche todos explicitamente, nunca depende
+    do default.
+  - Ver o gotcha novo no topo (AGENTS.md → Gotchas): adicionar componente à média do
+    `technical_analyzer` muda a confiança da fusão de fixtures já calibradas em outro módulo,
+    mesmo sem tocar nele. Quebrou 3 testes em `test_runner.py` (rampa reta de preço = fatores de
+    tendência e de reversão brigando por natureza, confiança cai abaixo do limiar de história 27);
+    corrigido com `_runner(min_signal_confidence=0.01)`, já documentado no comentário dos testes.
+  - Janela de todo fator novo (momentum até 20, reversão 10, volatilidade 20, ADX 14) ficou menor
+    que `MACD_SLOW + MACD_SIGNAL` (35), que segue sendo o requisito mais exigente de
+    `minimum_candles()` — não precisou mexer nessa constante nem em nenhum teste que a usa
+    (`test_backtester.py`, `test_serie_curta_nao_produz_indicador`).
+---
+
+## [2026-08-06] — História 36: Dashboard simplificado e fiel ao dado
+- Backend: novo `AuditEventType.ORDER_BLOCKED` (migration
+  `9b1c6e2a7f3d_add_order_blocked_audit_event.py`, `ALTER TYPE ... ADD VALUE`) e helper
+  `BotRunner._registrar_bloqueio` chamado em todo ponto de `_process_symbol`/`_executar` que
+  rejeita uma ordem sem passar pelo `risk_manager` (confiança insuficiente, cooldown/leitura
+  repetida, ATR inválido, stop inválido, risco que não cobre o lote mínimo, margem livre
+  insuficiente) — antes só existiam como log estruturado (`structlog`), nunca consultáveis pela
+  API. Kill switch e drawdown não duplicam o evento: já persistem seu próprio motivo desde as
+  histórias 18/29.
+- Frontend: `EquityCurveChart.tsx` removido (reconstruía o histórico de equity de trás para
+  frente a partir do PnL fechado — correto só enquanto nenhuma posição fica aberta entre o início
+  da série e o F5, premissa que não se sustenta). Dois componentes novos na Visão geral:
+  `OpenPositionsCard` (consome `GET /trades/`, posições ao vivo do broker — endpoint já existia
+  em `lib/api.ts` mas nunca era chamado pelo frontend) e `BlockReasonCard` (deriva "por que a
+  última ordem foi bloqueada" do audit log já carregado via `lib/blockReason.ts`, sem endpoint
+  novo). `page.tsx` passou a buscar `getOpenPositions()` e repassar `auditEntries`/
+  `openPositions` para `OverviewTab`.
+- Arquivos alterados: `backend/models/enums.py`, `backend/migrations/versions/
+  9b1c6e2a7f3d_add_order_blocked_audit_event.py` (novo), `backend/execution/runner.py`,
+  `backend/tests/test_runner.py` (asserções novas nos testes de atr_invalido, cooldown,
+  confiança insuficiente, stop_invalido; teste novo de margem insuficiente; `FakeTerminal` ganhou
+  `margin_free` distinto de `equity`), `frontend/src/lib/blockReason.ts` (novo),
+  `frontend/src/components/{OpenPositionsCard,BlockReasonCard}.tsx` (novos),
+  `frontend/src/components/tabs/OverviewTab.tsx`, `frontend/src/app/page.tsx`,
+  `frontend/src/components/charts/EquityCurveChart.tsx` (removido).
+- **Aprendizados para as próximas iterações:**
+  - Ver os três padrões/gotchas novos no topo do arquivo (AGENTS.md → Gotchas): o helper único de
+    bloqueio, o gate de tamanho que colapsa dois motivos distintos no mesmo rótulo, e o achado
+    real de posições abertas divergindo entre banco e broker.
+  - Verificação visual rodando localmente contra a conta demo real (login ativo, equity ~US$
+    100.566, bot já operando havia algum tempo) confirmou o comportamento pretendido: o card de
+    bloqueio mostrou "Nenhum bloqueio — a última ordem foi executada" (o evento `order_placed`
+    mais recente do audit log), e o card de posições abertas mostrou "Nenhuma posição aberta no
+    broker" enquanto a aba Trades ainda listava 5 trades com status "Aberto" no banco — a
+    divergência que a história pedia para expor, capturada ao vivo, não simulada.
+  - `curl` sem `-L` mostra um 308 redirect (`/api/audit/?limit=5` → `/api/audit?limit=5`) no rewrite
+    do Next.js para rotas com barra final antes da query string; o navegador (e `fetch`) segue o
+    redirect sozinho, então não é regressão — só engana quem testa via `curl` direto sem seguir
+    redirect.
+  - Reaproveitar o audit log como fonte de "estado atual" (em vez de um endpoint dedicado) só
+    funciona porque nenhum evento não relacionado a bloqueio é gravado enquanto o bloqueio
+    permanece ativo (kill switch e drawdown retornam antes de processar qualquer símbolo). Se um
+    evento futuro passar a ser gravado durante um ciclo bloqueado, `lib/blockReason.ts` precisa
+    ser revisto — o filtro assume que o evento de bloqueio continua sendo o mais recente do
+    conjunto relevante até o reset.
+---
+Nenhuma historia concluida na iteracao 5. Parando para inspecao.

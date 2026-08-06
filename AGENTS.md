@@ -39,6 +39,11 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 29 — Perda flutuante conta e drawdown acumulado bloqueia | ✅ |
 | 30 — Volume proporcional ao equity | ✅ |
 | 31 — contract_size sincronizado com o broker | ✅ |
+| 32 — Perfil agressivo: margem do broker como único teto de tamanho | ✅ |
+| 33 — Stop e alvo do perfil agressivo | ✅ |
+| 34 — Múltiplas posições por símbolo com leitura distinta | ✅ |
+| 35 — Alpha factors clássicos no technical analyzer | ✅ |
+| 36 — Dashboard simplificado e fiel ao dado | ✅ |
 
 ---
 
@@ -223,6 +228,80 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   comparação `mudou = (...)` do `_get_or_create_instrument`. Ao adicionar um novo campo de
   `SymbolInfo` no futuro, incluí-lo ali é parte do trabalho, não um follow-up — o padrão já existe,
   só falta lembrar de estendê-lo.
+- **Mudar um default de config usado num teste que só cita o *nome* do campo (`runner.settings.
+  atr_sl_multiplier`) propaga sozinho; um teste que fixa o *valor numérico esperado* (fixture de ATR
+  escolhida a dedo para o default antigo) não propaga e quebra silenciosamente.** A história 33 trocou
+  `atr_sl_multiplier` de 2.0 para 1.0; `test_executar_volume_e_derivado_do_risco` (história 30) tinha
+  um ATR fixo calibrado para o default antigo cair num múltiplo exato do `volume_step` do broker — com
+  o novo default o volume calculado passou a arredondar (`1.6666... → 1.66`) e o `pytest.approx`
+  contra o valor bruto não batia mais. Ao mudar um default numérico, procure todo teste cujo *dado de
+  entrada* (não só a leitura do campo) foi escolhido em função do valor antigo.
+- **Coluna `TimestampTZ` lida do banco em teste unitário (SQLite) volta naive; em Postgres volta
+  aware.** Subtrair diretamente de `datetime.now(UTC)` levanta `TypeError` só no SQLite — o mesmo
+  gotcha que `outcome_recorder._utc` já resolvia para `opened_at`/`closed_at` apareceu de novo ao
+  ler `Trade.created_at` de volta do banco para calcular um cooldown (história 34). Normalize com
+  `momento if momento.tzinfo is not None else momento.replace(tzinfo=UTC)` (ou chame o helper já
+  existente) sempre que uma coluna `TimestampTZ` lida do banco for usada em aritmética de data em
+  Python, não só em filtro `WHERE` (que não sofre o problema, porque a comparação roda no SQL).
+- **Adicionar componente novo ao `technical_analyzer` muda a confiança da fusão de fixtures de
+  teste já calibradas em outros módulos, mesmo sem tocar neles.** A história 35 acrescentou 4
+  alpha factors (`momentum`, `mean_reversion`, `relative_volatility`, `trend_strength`) à mesma
+  média que já tinha `rsi`/`macd`/`bollinger`. Numa rampa reta de preço, os fatores de reversão
+  (rsi/bollinger/mean_reversion) sempre discordam dos de tendência (momentum/trend_strength) — é
+  o comportamento correto (reversão prevê puxada, tendência prevê continuação), mas derruba a
+  concordância e, por consequência, a confiança da fusão. Três testes em `test_runner.py`
+  calibrados na história 24 (fixture de rampa reta com `min_signal_confidence` default) ficaram
+  abaixo do limiar e pararam de gerar ordem; corrigido com override
+  `_runner(min_signal_confidence=0.01)`, já que o próprio teste documenta que a direção/confiança
+  exata não importa, só que `_process_symbol` chega até `_executar`. Mesmo padrão da história 33
+  (mudar constante interna quebra teste que fixa valor numérico calibrado alhures) — ao adicionar
+  componente novo à média do `technical_analyzer`, procure teste de outro módulo que dependa do
+  valor concreto de confiança/score resultante, não só do sinal (BUY/SELL/HOLD).
+- **Bloqueio do runner que nunca chega ao `order_manager` (confiança, cooldown, margem, ATR/stop
+  inválidos, risco que não paga o lote mínimo) só existia como log estruturado — nada gravado no
+  banco.** A história 36 acrescentou `AuditEventType.ORDER_BLOCKED` e um helper único
+  (`BotRunner._registrar_bloqueio`) chamado em todo `return` cedo de `_process_symbol`/`_executar`
+  que não passa pelo `risk_manager`. Kill switch e drawdown **não** duplicam esse evento — eles já
+  persistem seu próprio motivo (`KILL_SWITCH_TRIGGERED`/`DRAWDOWN_LIMIT_TRIGGERED`, histórias
+  18/29) e, como o ciclo retorna antes de processar qualquer símbolo enquanto o bloqueio está
+  ativo, nenhum evento mais recente sobrescreve o motivo no audit log — o evento de trigger
+  continua sendo o mais recente até o reset. O dashboard deriva "por que a última ordem foi
+  bloqueada" filtrando o audit log (já carregado, sem endpoint novo) pelos tipos relevantes
+  (`order_placed`, `order_blocked`, `order_rejected`, `kill_switch_*`, `drawdown_limit_*`) e
+  pegando o primeiro (mais recente primeiro na query). Ver `frontend/src/lib/blockReason.ts`.
+- **Dois gates de tamanho de ordem podem colapsar no mesmo log/motivo mesmo sendo causas
+  diferentes.** `runner._executar` usa o mesmo evento `runner.margem_insuficiente` /
+  `motivo="margem_insuficiente"` tanto para margem livre real insuficiente quanto para o caso em
+  que `VOLUME_MAX_PER_ORDER_LOTS` (teto fixo) corta o volume abaixo do `min_volume` do broker —
+  são causas diferentes, mesmo rótulo. Ao escrever teste para "risco não cobre o lote mínimo"
+  (primeiro gate, `_calcular_volume` devolve `None`), garanta que `volume_min` fique ACIMA do
+  volume bruto calculado pelo risco; um `volume_min` só um pouco maior deixa o volume bruto passar
+  no primeiro gate e cair no segundo (teto por ordem + margem), gravando o motivo errado.
+- **Dashboard como fiscal do pipeline: "posições abertas" batendo com o banco, não com o broker, é
+  bug, não feature.** A história 36 ligou `GET /trades/` (posições ao vivo do MT5, endpoint já
+  existia mas não era consumido pelo frontend) na Visão geral. Rodando localmente contra a conta
+  demo real desta máquina, o banco tinha 5 trades `status=open`, mas o broker devolveu zero
+  posições — divergência real, não hipotética (reconciliação do `position_tracker` está atrasada
+  ou os trades já fecharam fora do fluxo rastreado). Isso confirma por que a história pediu "bate
+  com o broker, não só com o banco": mostrar o status do banco como se fosse a posição atual
+  teria sido literalmente falso nesse momento.
+- **Gráfico "derivado por suposição" ≠ gráfico "sem dado real".** A curva de equity (história 22)
+  foi removida nesta história porque era reconstruída de trás para frente a partir do equity atual
+  menos o PnL fechado (nunca existiu tabela de histórico) — correta só enquanto nenhuma posição
+  fica aberta entre o início da série e o F5, premissa que quebra sozinha com o bot rodando. Os
+  outros 4 gráficos (distribuição de P&L, win rate por par, sentimento vs. técnica, heatmap por
+  hora) ficaram: são agregações honestas de dado já persistido, não extrapolação — a AC "remover
+  gráfico sem dado real por trás" mirava um caso específico, não um convite a esvaziar a Visão
+  geral.
+- **Fator alpha novo em `IndicatorSnapshot`: raw no snapshot, normalização no `_score_*`.** Mesmo
+  padrão do MACD/ATR: o snapshot guarda o valor cru (`momentum_5`, `reversion_mean`,
+  `atr_baseline`, `adx_pos`...) calculado via `close.diff()`/`.rolling()`/`ADXIndicator` da lib
+  `ta`; a função `_score_*` faz a divisão que dá a escala (por ATR, por desvio-padrão, por soma de
+  DI) e devolve 0.0 quando o denominador é ≤0 — nunca um valor forjado. Como o campo cru entra na
+  mesma lista `valores` que os indicadores antigos dentro de `compute_indicators`, ele herda de
+  graça a checagem de NaN (série curta ou em aquecimento já devolve `None` sem código extra),
+  desde que a janela do fator novo seja menor que `minimum_candles()` (35, imposto pelo MACD) —
+  janelas de até ~20-33 candles não exigem mexer nessa constante.
 
 ---
 

@@ -117,8 +117,6 @@ def test_place_order_success(session: Session, order_manager: OrderManager) -> N
         instrument_id=instrument.id,
         equity=10000.0,
         daily_loss=0.0,
-        current_exposure_monetary=0.0,
-        trade_monetary_risk=50.0,
     )
 
     assert trade is not None
@@ -147,8 +145,8 @@ def test_place_order_idempotent(session: Session, order_manager: OrderManager) -
     )
     client_req_id = str(uuid.uuid4())
 
-    t1 = order_manager.place_order(req, client_req_id, instrument.id, 10000.0, 0.0, 0.0, 50.0)
-    t2 = order_manager.place_order(req, client_req_id, instrument.id, 10000.0, 0.0, 0.0, 50.0)
+    t1 = order_manager.place_order(req, client_req_id, instrument.id, 10000.0, 0.0)
+    t2 = order_manager.place_order(req, client_req_id, instrument.id, 10000.0, 0.0)
 
     assert t1 is not None
     assert t2 is not None
@@ -156,6 +154,19 @@ def test_place_order_idempotent(session: Session, order_manager: OrderManager) -
 
 
 def test_place_order_risk_rejected(session: Session, order_manager: OrderManager) -> None:
+    """Volume acima do teto de tamanho (história 32) é o motivo de rejeição aqui.
+
+    Risco por trade e exposição agregada não bloqueiam mais ordem — o único
+    teto de tamanho que resta em `risk_manager` é `volume_max_per_order_lots`
+    (default 2.0), então um volume de 10.0 é o jeito de exercitar o caminho de
+    rejeição sem depender de parâmetros removidos.
+    """
+    # O instrumento precisa existir: desde a história 32 a rejeição também
+    # grava um `Trade` com status REJECTED, e ele referencia `instrument_id`.
+    instrument = Instrument(symbol="EURUSD", digits=5)
+    session.add(instrument)
+    session.commit()
+
     req = OrderRequest(
         symbol="EURUSD",
         side=Side.BUY,
@@ -165,12 +176,12 @@ def test_place_order_risk_rejected(session: Session, order_manager: OrderManager
         take_profit=1.2,
     )
 
-    trade = order_manager.place_order(req, "test_rej", 1, 10000.0, 0.0, 0.0, 500.0)
+    trade = order_manager.place_order(req, "test_rej", instrument.id, 10000.0, 0.0)
 
     assert trade is None
     log = session.query(AuditLog).filter_by(event_type=AuditEventType.ORDER_REJECTED).first()
     assert log is not None
-    assert "excede limite" in str(log.payload.get("reason", ""))
+    assert "excede o teto" in str(log.payload.get("reason", ""))
 
 
 def test_place_order_mt5_rejected(
@@ -190,7 +201,7 @@ def test_place_order_mt5_rejected(
         take_profit=1.2,
     )
 
-    trade = order_manager.place_order(req, "test_mt5_rej", instrument.id, 10000.0, 0.0, 0.0, 50.0)
+    trade = order_manager.place_order(req, "test_mt5_rej", instrument.id, 10000.0, 0.0)
     assert trade is not None
     assert trade.status == TradeStatus.REJECTED
 

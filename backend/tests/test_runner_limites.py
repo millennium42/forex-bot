@@ -1,104 +1,157 @@
-"""Travas que impedem o bot de empilhar posições.
+"""Travas que impedem o bot de reabrir a MESMA leitura de mercado (história 34).
 
-Um sinal técnico persiste por vários ciclos. Sem estas travas o runner reabre a
-mesma direção a cada minuto: em uma hora seriam 60 posições no mesmo par, e a
-exposição real da conta cresce sem que nada dispare.
+Múltiplas posições no mesmo símbolo são permitidas: a trava antiga de "uma
+posição por símbolo" saiu. O que continua proibido é empilhar a mesma direção
+a cada ciclo enquanto o sinal técnico persistir. Direção oposta às posições já
+abertas é, por definição, uma leitura diferente e nunca precisa de cooldown.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
+from datetime import UTC, datetime, timedelta
 
-import pytest
+from sqlalchemy.orm import Session
 
-from backend.collection.mt5_client import MT5ConnectionError, Position
+from backend.collection.mt5_client import Position
 from backend.config import Settings
 from backend.execution.runner import BotRunner
-
-CONTRACT_SIZE = 100_000.0
+from backend.models.enums import Side, TradeStatus
+from backend.models.instrument import Instrument
+from backend.models.trade import Trade
 
 
 class FakeClient:
     """Dublê do MT5Client no nível do cliente, não do terminal."""
 
-    def __init__(
-        self,
-        posicoes: list[Position] | None = None,
-        *,
-        symbol_info_falha: bool = False,
-    ) -> None:
+    def __init__(self, posicoes: list[Position] | None = None) -> None:
         self._posicoes = posicoes or []
-        self._symbol_info_falha = symbol_info_falha
 
     def get_positions(self) -> list[Position]:
         return self._posicoes
 
-    def get_symbol_info(self, symbol: str) -> Any:
-        if self._symbol_info_falha:
-            raise MT5ConnectionError("symbol_info indisponível")
-        return SimpleNamespace(symbol=symbol, volume_min=0.01, contract_size=CONTRACT_SIZE)
 
-
-def _posicao(symbol: str = "EURUSD", volume: float = 0.01, preco: float = 1.1545) -> Position:
+def _posicao(symbol: str = "EURUSD", tipo: int = 0, preco: float = 1.1545) -> Position:
     return Position(
         ticket=1,
         identifier=1,
         symbol=symbol,
-        volume=volume,
-        type=0,
+        volume=0.01,
+        type=tipo,
         sl=1.15,
         tp=1.16,
         price_open=preco,
     )
 
 
-def _runner() -> BotRunner:
-    return BotRunner(symbols=["EURUSD"], settings=Settings(_env_file=None))
+def _settings(**overrides: object) -> Settings:
+    base: dict[str, object] = {"trading_mode": "demo", "real_trading_unlocked": False}
+    base.update(overrides)
+    return Settings(_env_file=None, **base)  # type: ignore[arg-type]
 
 
-# --- exposição -------------------------------------------------------------
-def test_exposicao_usa_contract_size() -> None:
-    """0.01 lote de EURUSD é US$ 1.154 de exposição, não US$ 0,0115.
+def _runner(**overrides: object) -> BotRunner:
+    return BotRunner(["EURUSD"], settings=_settings(**overrides))
 
-    Sem o contract_size a exposição sai subestimada em cinco ordens de grandeza
-    e o limite de 3% do equity nunca dispara.
-    """
+
+def _instrumento(session: Session, symbol: str = "EURUSD") -> Instrument:
+    instrumento = Instrument(
+        symbol=symbol,
+        contract_size=100_000.0,
+        min_volume=0.01,
+        volume_step=0.01,
+        volume_max=100.0,
+    )
+    session.add(instrumento)
+    session.commit()
+    return instrumento
+
+
+def _trade(
+    instrumento: Instrument,
+    side: Side,
+    created_at: datetime,
+    status: TradeStatus = TradeStatus.OPEN,
+) -> Trade:
+    return Trade(
+        client_request_id=f"trade-{created_at.timestamp()}-{side.value}",
+        instrument_id=instrumento.id,
+        side=side,
+        status=status,
+        volume=0.01,
+        stop_loss=1.0,
+        trading_mode="demo",
+        created_at=created_at,
+    )
+
+
+# --- sem posição aberta: sempre permite -------------------------------------
+def test_sem_posicao_aberta_permite_abrir(session: Session) -> None:
     runner = _runner()
-    client = FakeClient([_posicao()])
 
-    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
-
-    esperado = 0.01 * CONTRACT_SIZE * 1.1545
-    assert exposicao == pytest.approx(esperado)
+    assert (
+        runner._pode_abrir_posicao(session, FakeClient([]), "EURUSD", Side.BUY) is True  # type: ignore[arg-type]
+    )
 
 
-def test_exposicao_soma_todas_as_posicoes() -> None:
+# --- direção oposta às abertas é sempre permitida, sem cooldown -------------
+def test_direcao_oposta_a_aberta_e_sempre_permitida(session: Session) -> None:
     runner = _runner()
-    client = FakeClient([_posicao(), _posicao("GBPUSD", preco=1.3467)])
+    client = FakeClient([_posicao("EURUSD", tipo=0)])  # BUY aberto
 
-    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
-
-    esperado = 0.01 * CONTRACT_SIZE * 1.1545 + 0.01 * CONTRACT_SIZE * 1.3467
-    assert exposicao == pytest.approx(esperado)
+    assert runner._pode_abrir_posicao(session, client, "EURUSD", Side.SELL) is True  # type: ignore[arg-type]
 
 
-def test_exposicao_assume_contrato_padrao_quando_broker_nao_responde() -> None:
-    """Subestimar exposição é o erro perigoso; ignorar a posição seria isso."""
+# --- mesma direção sem Trade registrado: nada a proteger, permite ----------
+def test_mesma_direcao_sem_trade_registrado_permite(session: Session) -> None:
     runner = _runner()
-    client = FakeClient([_posicao()], symbol_info_falha=True)
+    client = FakeClient([_posicao("EURUSD", tipo=0)])  # BUY aberto, sem Trade no banco
 
-    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
-
-    assert exposicao == pytest.approx(0.01 * CONTRACT_SIZE * 1.1545)
+    assert runner._pode_abrir_posicao(session, client, "EURUSD", Side.BUY) is True  # type: ignore[arg-type]
 
 
-# --- uma posição por símbolo ----------------------------------------------
-def test_detecta_posicao_ja_aberta_no_simbolo() -> None:
-    client = FakeClient([_posicao("EURUSD")])
-    assert BotRunner._tem_posicao_aberta(client, "EURUSD") is True  # type: ignore[arg-type]
-    assert BotRunner._tem_posicao_aberta(client, "GBPUSD") is False  # type: ignore[arg-type]
+# --- mesma direção dentro do cooldown: bloqueia -----------------------------
+def test_mesma_direcao_dentro_do_cooldown_bloqueia(session: Session) -> None:
+    runner = _runner(signal_repeat_cooldown_minutes=30)
+    client = FakeClient([_posicao("EURUSD", tipo=0)])
+    instrumento = _instrumento(session)
+    session.add(_trade(instrumento, Side.BUY, datetime.now(UTC) - timedelta(minutes=5)))
+    session.commit()
+
+    assert runner._pode_abrir_posicao(session, client, "EURUSD", Side.BUY) is False  # type: ignore[arg-type]
 
 
-def test_sem_posicoes_o_simbolo_esta_livre() -> None:
-    assert BotRunner._tem_posicao_aberta(FakeClient([]), "EURUSD") is False  # type: ignore[arg-type]
+# --- mesma direção após o cooldown: permite ---------------------------------
+def test_mesma_direcao_apos_cooldown_permite(session: Session) -> None:
+    runner = _runner(signal_repeat_cooldown_minutes=30)
+    client = FakeClient([_posicao("EURUSD", tipo=0)])
+    instrumento = _instrumento(session)
+    session.add(_trade(instrumento, Side.BUY, datetime.now(UTC) - timedelta(minutes=31)))
+    session.commit()
+
+    assert runner._pode_abrir_posicao(session, client, "EURUSD", Side.BUY) is True  # type: ignore[arg-type]
+
+
+# --- Trade REJECTED não conta como sinal executado --------------------------
+def test_trade_rejeitado_nao_conta_para_o_cooldown(session: Session) -> None:
+    runner = _runner(signal_repeat_cooldown_minutes=30)
+    client = FakeClient([_posicao("EURUSD", tipo=0)])
+    instrumento = _instrumento(session)
+    session.add(
+        _trade(
+            instrumento,
+            Side.BUY,
+            datetime.now(UTC) - timedelta(seconds=1),
+            status=TradeStatus.REJECTED,
+        )
+    )
+    session.commit()
+
+    assert runner._pode_abrir_posicao(session, client, "EURUSD", Side.BUY) is True  # type: ignore[arg-type]
+
+
+# --- outro símbolo não interfere ---------------------------------------------
+def test_posicao_aberta_em_outro_simbolo_nao_bloqueia(session: Session) -> None:
+    runner = _runner()
+    client = FakeClient([_posicao("GBPUSD", tipo=0)])
+
+    assert runner._pode_abrir_posicao(session, client, "EURUSD", Side.BUY) is True  # type: ignore[arg-type]

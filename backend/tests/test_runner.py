@@ -4,8 +4,8 @@ O runner é onde o pipeline inteiro se encontra, então os testes aqui garantem
 que nenhum número usado pelo risk manager é inventado: kill switch bloqueia o
 ciclo inteiro, ATR inválido não vira ordem, o stop é derivado da volatilidade
 medida (não constante), a idempotência tem granularidade de minuto, a perda do
-dia vem só de outcomes negativos de hoje, a exposição enxerga posição aberta
-fora do bot, e falha de MT5 encerra o ciclo em vez de pular o símbolo.
+dia vem só de outcomes negativos de hoje, e falha de MT5 encerra o ciclo em
+vez de pular o símbolo.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal
-from backend.collection.mt5_client import MT5Client, MT5ConnectionError
+from backend.collection.mt5_client import MT5Client, MT5ConnectionError, Position
 from backend.config import Settings
 from backend.execution import runner as runner_module
 from backend.execution.drawdown_guard import (
@@ -34,17 +34,35 @@ from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import RiskManager
 from backend.execution.runner import BotRunner
 from backend.learning.outcome_recorder import record_outcome
-from backend.models.enums import Direction, Side, TradeStatus
+from backend.models.audit_log import AuditLog
+from backend.models.enums import AuditEventType, Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
 from backend.models.trade import Trade
 
 BUY_SIGNAL = FusedSignal(direction=Direction.BUY, score=0.5, confidence=0.8, weight_version="v1.0")
+SELL_SIGNAL = FusedSignal(
+    direction=Direction.SELL, score=-0.5, confidence=0.8, weight_version="v1.0"
+)
 
 
 def _instrumento(session: Session, client: MT5Client, symbol: str = "EURUSD") -> Instrument:
     return BotRunner._get_or_create_instrument(session, symbol, client)
+
+
+def _motivos_bloqueio(session: Session) -> list[str]:
+    """Motivos gravados em `ORDER_BLOCKED` (história 36), na ordem em que ocorreram."""
+    eventos = (
+        session.execute(
+            select(AuditLog)
+            .where(AuditLog.event_type == AuditEventType.ORDER_BLOCKED)
+            .order_by(AuditLog.id)
+        )
+        .scalars()
+        .all()
+    )
+    return [str(e.payload["motivo"]) for e in eventos]
 
 
 class _FixedDatetime(datetime):
@@ -65,6 +83,7 @@ class FakeTerminal:
         tick: Any = None,
         retcode: int | None = 10009,
         equity: float = 100_000.0,
+        margin_free: float | None = None,
         candle_rows: list[dict[str, float]] | None = None,
         volume_min: float = 0.01,
         contract_size: float = 100_000.0,
@@ -73,6 +92,10 @@ class FakeTerminal:
         self._tick = tick or SimpleNamespace(time=1_700_000_000, bid=1.0850, ask=1.0852)
         self.retcode = retcode
         self.equity = equity
+        # Distinto de `equity` só quando o teste precisa isolar o gate de
+        # margem livre do gate de risco por trade (história 36) — ambos usam
+        # o mesmo campo da conta real, mas dependem de fórmulas diferentes.
+        self.margin_free = margin_free if margin_free is not None else equity
         self.candle_rows = candle_rows
         self.volume_min = volume_min
         self.contract_size = contract_size
@@ -98,7 +121,7 @@ class FakeTerminal:
             balance=self.equity,
             equity=self.equity,
             margin=0.0,
-            margin_free=self.equity,
+            margin_free=self.margin_free,
             leverage=100,
             trade_mode=0,
         )
@@ -288,6 +311,7 @@ def test_executar_atr_invalido_nao_gera_ordem(session: Session, atr_invalido: fl
     )
 
     assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["atr_invalido"]
 
 
 # -- stop loss derivado do ATR, não constante (AC3) --------------------------
@@ -306,7 +330,25 @@ def test_executar_stop_loss_e_derivado_do_atr(session: Session, symbol: str, atr
     distancia_sl = atr * runner.settings.atr_sl_multiplier
     entrada = client.get_tick(symbol).ask
     assert trade.stop_loss == pytest.approx(entrada - distancia_sl)
-    assert trade.take_profit == pytest.approx(entrada + distancia_sl * runner_module.RR_RATIO)
+    assert trade.take_profit == pytest.approx(
+        entrada + distancia_sl * runner.settings.take_profit_rr
+    )
+
+
+def test_executar_sl_tp_usam_multiplicadores_configurados(session: Session) -> None:
+    runner = _runner(atr_sl_multiplier=3.0, take_profit_rr=0.5)
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0010
+    runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    entrada = client.get_tick("EURUSD").ask
+    distancia_sl = atr * 3.0
+    assert trade.stop_loss == pytest.approx(entrada - distancia_sl)
+    assert trade.take_profit == pytest.approx(entrada + distancia_sl * 0.5)
 
 
 def test_executar_stop_loss_nao_e_constante_entre_atrs_diferentes(session: Session) -> None:
@@ -333,7 +375,13 @@ def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
-    atr = 0.0010
+    # ATR escolhido para o volume calculado pelo risco cair exato num múltiplo
+    # do volume_step do broker (evita ruído de arredondamento no approx) e
+    # ainda ficar abaixo do teto de tamanho da história 32 (default 2.0
+    # lotes), já considerando o atr_sl_multiplier default 1.0 da história 33
+    # — este teste cobre só a derivação por risco (história 30), não a
+    # interação com o teto.
+    atr = 0.0040
     runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
 
     trade = session.execute(select(Trade)).scalars().one()
@@ -341,7 +389,26 @@ def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
     esperado = (100_000.0 * runner.settings.max_risk_per_trade_pct / 100.0) / (
         distancia_sl * instrumento.contract_size
     )
+    assert esperado < runner.settings.volume_max_per_order_lots
     assert trade.volume == pytest.approx(esperado)
+
+
+def test_executar_volume_nunca_excede_o_teto_por_ordem(session: Session) -> None:
+    """História 32: perfil agressivo — VOLUME_MAX_POR_ORDEM é o teto duro de tamanho.
+
+    ATR pequeno faz o risco calculado (história 30) pedir mais que o teto fixo
+    de lotes; o volume final tem que ficar preso no teto, nunca no valor bruto.
+    """
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0010  # risco bruto pediria 2.5 lotes, acima do teto de 2.0
+    runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    assert trade.volume == pytest.approx(runner.settings.volume_max_per_order_lots)
 
 
 def _instrumento_padrao(**overrides: object) -> Instrument:
@@ -398,15 +465,113 @@ def test_calcular_volume_respeita_volume_max_do_broker() -> None:
 
 
 def test_executar_ordem_rejeitada_quando_risco_nao_cobre_lote_minimo(session: Session) -> None:
-    """Risco não paga o lote mínimo: a ordem é rejeitada, nunca arredondada para cima."""
+    """Risco não paga o lote mínimo: a ordem é rejeitada, nunca arredondada para cima.
+
+    `volume_min=10.0` fica acima do volume bruto calculado pelo risco (5.0
+    lotes com estes parâmetros) para acionar só o primeiro gate
+    (`_calcular_volume` devolve `None`) — com um mínimo menor (ex.: 5.0) o
+    teto por ordem (`volume_max_per_order_lots=2.0`) entra antes e o volume
+    cai por outro motivo (margem/teto), não pela conta de risco em si.
+    """
     runner = _runner()
-    client = _client(FakeTerminal(volume_min=5.0))
+    client = _client(FakeTerminal(volume_min=10.0))
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
     runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento)
 
     assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["risco_insuficiente"]
+
+
+def test_executar_ordem_rejeitada_quando_margem_insuficiente(session: Session) -> None:
+    """Margem livre real não cobre nem o lote mínimo: a ordem é rejeitada (história 32/36)."""
+    runner = _runner()
+    # Risco por trade sozinho pediria ~5 lotes (equity alta, ATR pequeno); a
+    # margem livre real de US$5 só cobre uma fração de lote, abaixo do mínimo.
+    client = _client(FakeTerminal(equity=100_000.0, margin_free=5.0))
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento)
+
+    assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["margem_insuficiente"]
+
+
+# -- história 34: múltiplas posições por símbolo, leitura distinta -----------
+
+
+def _posicao_aberta(symbol: str = "EURUSD", tipo: int = 0) -> Position:
+    return Position(
+        ticket=1,
+        identifier=1,
+        symbol=symbol,
+        volume=0.01,
+        type=tipo,
+        sl=1.15,
+        tp=1.16,
+        price_open=1.1545,
+    )
+
+
+def test_executar_mesmo_sinal_dois_ciclos_nao_abre_duas_posicoes(session: Session) -> None:
+    runner = _runner()
+    terminal = FakeTerminal()
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+    assert len(session.execute(select(Trade)).scalars().all()) == 1
+
+    # O ciclo seguinte enxerga a posição que o broker acabou de confirmar.
+    terminal.positions = (_posicao_aberta("EURUSD", tipo=0),)
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    assert len(session.execute(select(Trade)).scalars().all()) == 1
+    assert _motivos_bloqueio(session) == ["cooldown"]
+
+
+def test_executar_direcao_invertida_abre_posicao_mesmo_com_uma_ja_aberta(session: Session) -> None:
+    runner = _runner()
+    terminal = FakeTerminal(positions=(_posicao_aberta("EURUSD", tipo=0),))  # BUY já aberto
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", SELL_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    trades = session.execute(select(Trade)).scalars().all()
+    assert len(trades) == 1
+    assert trades[0].side == Side.SELL
+
+
+def test_executar_mesma_direcao_apos_cooldown_abre_nova_posicao(session: Session) -> None:
+    runner = _runner(signal_repeat_cooldown_minutes=30)
+    terminal = FakeTerminal(positions=(_posicao_aberta("EURUSD", tipo=0),))  # BUY já aberto
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    session.add(
+        Trade(
+            client_request_id="antigo-1",
+            instrument_id=instrumento.id,
+            side=Side.BUY,
+            status=TradeStatus.OPEN,
+            volume=0.01,
+            stop_loss=1.0,
+            trading_mode="demo",
+            created_at=datetime.now(UTC) - timedelta(minutes=31),
+        )
+    )
+    session.commit()
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    trades = session.execute(select(Trade).order_by(Trade.id)).scalars().all()
+    assert len(trades) == 2
 
 
 # -- idempotência com granularidade de minuto (AC4) --------------------------
@@ -522,44 +687,6 @@ def test_perda_do_dia_sem_posicoes_abertas_e_so_o_realizado(session: Session) ->
     _outcome_de(session, pnl=-40.0, created_at=datetime.now(UTC))
 
     assert BotRunner._perda_do_dia(session, _client()) == pytest.approx(40.0)
-
-
-# -- exposição enxerga posição aberta fora do bot (AC6) -----------------------
-
-
-def test_exposicao_aberta_inclui_posicoes_abertas_fora_do_bot() -> None:
-    posicoes_manuais = (
-        SimpleNamespace(
-            ticket=1,
-            identifier=1,
-            symbol="EURUSD",
-            volume=0.5,
-            type=0,
-            sl=0.0,
-            tp=0.0,
-            price_open=1.1000,
-        ),
-        SimpleNamespace(
-            ticket=2,
-            identifier=2,
-            symbol="GBPUSD",
-            volume=0.2,
-            type=1,
-            sl=0.0,
-            tp=0.0,
-            price_open=1.3000,
-        ),
-    )
-    client = _client(FakeTerminal(positions=posicoes_manuais))
-
-    exposicao = _runner()._exposicao_aberta_monetaria(client)
-
-    # O contract_size entra na conta: 0.5 lote não é 0,55 de exposição, é 55.000.
-    # O valor devolvido é monetário — não um percentual do equity (história 28:
-    # misturar as duas unidades era o bug que fazia o teto de 3% nunca disparar).
-    contrato = 100_000.0
-    exposto = abs(0.5 * contrato * 1.1000) + abs(0.2 * contrato * 1.3000)
-    assert exposicao == pytest.approx(exposto)
 
 
 # -- falha de MT5 encerra o ciclo em vez de pular o símbolo (AC7) ------------
@@ -681,9 +808,13 @@ def test_process_symbol_com_sinal_direcional_executa_ordem(session: Session) -> 
     # Amplitude pequena o bastante para o risco monetário (ATR-based) caber no
     # limite de 1% do equity; a direção em si (compra ou venda) não importa
     # aqui — o que se testa é que _process_symbol chega até _executar.
+    # min_signal_confidence baixo porque, numa rampa reta, os fatores de
+    # reversão (rsi/bollinger/mean_reversion) e os de tendência
+    # (momentum/trend_strength) brigam entre si por natureza — a confiança
+    # da fusão fica baixa mesmo com sinal direcional claro (história 35).
     candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
     client = _client(FakeTerminal(candle_rows=candles))
-    runner = _runner()
+    runner = _runner(min_signal_confidence=0.01)
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
 
     runner._process_symbol("EURUSD", client, session, order_manager)
@@ -698,7 +829,7 @@ def test_process_symbol_com_sinal_direcional_executa_ordem(session: Session) -> 
 def test_process_symbol_grava_signal_antes_da_ordem_e_liga_trade(session: Session) -> None:
     candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
     client = _client(FakeTerminal(candle_rows=candles))
-    runner = _runner()
+    runner = _runner(min_signal_confidence=0.01)
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
 
     runner._process_symbol("EURUSD", client, session, order_manager)
@@ -760,6 +891,7 @@ def test_process_symbol_confianca_abaixo_do_limiar_nao_executa(
     signal = session.execute(select(Signal)).scalars().one()
     assert signal.direction == Direction.BUY  # decisão é gravada mesmo rejeitada
     assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["confianca_insuficiente"]
 
 
 def test_process_symbol_confianca_igual_ao_limiar_executa(
@@ -787,7 +919,7 @@ def test_process_symbol_confianca_acima_do_limiar_executa(
 def test_outcome_de_trade_com_signal_tem_predicted_direction(session: Session) -> None:
     candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
     client = _client(FakeTerminal(candle_rows=candles))
-    runner = _runner()
+    runner = _runner(min_signal_confidence=0.01)
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
 
     runner._process_symbol("EURUSD", client, session, order_manager)
@@ -820,6 +952,7 @@ def test_executar_com_stop_loss_nao_positivo_nao_gera_ordem(session: Session) ->
     runner._executar("EURUSD", BUY_SIGNAL, 1.0, client, session, order_manager, instrumento)
 
     assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["stop_invalido"]
 
 
 # -- run(): conecta, roda N ciclos e dorme entre eles -------------------------

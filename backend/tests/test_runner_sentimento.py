@@ -41,7 +41,15 @@ class FakeBackend:
 
 
 def _settings(**overrides: Any) -> Settings:
-    base: dict[str, Any] = {"trading_mode": "demo", "real_trading_unlocked": False}
+    # `sentiment_enabled=True` por default aqui: o default de produção é
+    # desligado (história 38), mas este arquivo existe justamente para exercitar
+    # o caminho com sentimento. Os testes do caminho desligado ficam separados,
+    # abaixo, e ligam/desligam de forma explícita.
+    base: dict[str, Any] = {
+        "trading_mode": "demo",
+        "real_trading_unlocked": False,
+        "sentiment_enabled": True,
+    }
     base.update(overrides)
     return Settings(_env_file=None, **base)
 
@@ -217,3 +225,23 @@ def test_obter_sentimento_com_backend_indisponivel_retorna_none(session: Session
     runner = _runner()  # sem analyzer injetado: carrega de verdade sob demanda
 
     assert runner._obter_sentimento(session, SYMBOL) is None
+
+
+# --- história 38: sentimento desligado -------------------------------------
+def test_sentimento_desligado_nao_consulta_documento(session: Session) -> None:
+    """Desligado, nem chega a olhar o banco — a decisão fica puramente técnica."""
+    _documento(session, "euro rallies strongly on EURUSD", minutos_atras=1)
+
+    runner = _runner(sentiment_enabled=False)
+
+    assert runner._obter_sentimento(session, SYMBOL) is None
+
+
+def test_sentimento_desligado_nao_carrega_o_analisador(session: Session) -> None:
+    """Sem analisador injetado e desligado: não pode tentar carregar o modelo."""
+    _documento(session, "EURUSD outlook positive", minutos_atras=1)
+    runner = BotRunner(symbols=[SYMBOL], settings=_settings(sentiment_enabled=False))
+
+    assert runner._obter_sentimento(session, SYMBOL) is None
+    # `_sentiment_analyzer` continua None: o loader nunca foi acionado.
+    assert runner._sentiment_analyzer is None
