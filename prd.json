@@ -385,7 +385,7 @@
         "kill switch diario e drawdown do pico continuam bloqueando o ciclo",
         "testes antigos de exposicao/risco por trade atualizados ou removidos com justificativa"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 33,

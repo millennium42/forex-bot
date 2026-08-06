@@ -63,16 +63,27 @@ class Settings(BaseSettings):
     timeframe: str = "M5"
 
     # --- Regras de risco (§4) ----------------------------------------------
-    # Volume da ordem é derivado deste percentual (história 30), não mais
-    # sempre o lote mínimo — 0.5% é o teto conservador até haver amostra real
-    # de resultado para recalibrar.
+    # Volume da ordem é derivado deste percentual (história 30) para
+    # dimensionar o lote pelo risco — não é mais usado por `risk_manager` como
+    # teto que bloqueia ordem (história 32: só a margem livre real do broker e
+    # `volume_max_per_order_lots` limitam tamanho).
     max_risk_per_trade_pct: float = Field(default=0.5, gt=0, le=100)
-    # Risco agregado de todas as posições abertas, mesma unidade do limite por
-    # trade. 3% / 0,5% = até 6 posições simultâneas no pior caso.
-    max_total_exposure_pct: float = Field(default=3.0, gt=0, le=100)
     max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)
     atr_sl_multiplier: float = Field(default=2.0, gt=0)
     macro_blackout_minutes: int = Field(default=15, ge=0)
+
+    # --- Perfil agressivo (história 32) -------------------------------------
+    # A pedido do operador, os tetos artificiais de TAMANHO saem de cena:
+    # risco por trade e exposição agregada deixam de bloquear ordem em
+    # `risk_manager`. O único teto de tamanho que resta é este valor fixo de
+    # lotes — nunca calculado a partir de risco — mais a margem livre real da
+    # conta. Kill switch de perda diária e drawdown do pico continuam intactos
+    # porque protegem a conta, não limitam o tamanho da ordem.
+    volume_max_per_order_lots: float = Field(default=2.0, gt=0)
+    # Folga sobre a margem livre real antes de calcular o volume máximo
+    # permitido: nunca 100%, para sobrar espaço para o preço variar entre o
+    # cálculo do volume e o envio da ordem ao broker.
+    margin_free_buffer_pct: float = Field(default=95.0, gt=0, le=100)
 
     # --- Regras FTMO --------------------------------------------------------
     ftmo_max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)

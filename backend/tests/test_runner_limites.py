@@ -1,43 +1,23 @@
 """Travas que impedem o bot de empilhar posições.
 
-Um sinal técnico persiste por vários ciclos. Sem estas travas o runner reabre a
-mesma direção a cada minuto: em uma hora seriam 60 posições no mesmo par, e a
-exposição real da conta cresce sem que nada dispare.
+Um sinal técnico persiste por vários ciclos. Sem esta trava o runner reabre a
+mesma direção a cada minuto: em uma hora seriam 60 posições no mesmo par.
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
-
-import pytest
-
-from backend.collection.mt5_client import MT5ConnectionError, Position
-from backend.config import Settings
+from backend.collection.mt5_client import Position
 from backend.execution.runner import BotRunner
-
-CONTRACT_SIZE = 100_000.0
 
 
 class FakeClient:
     """Dublê do MT5Client no nível do cliente, não do terminal."""
 
-    def __init__(
-        self,
-        posicoes: list[Position] | None = None,
-        *,
-        symbol_info_falha: bool = False,
-    ) -> None:
+    def __init__(self, posicoes: list[Position] | None = None) -> None:
         self._posicoes = posicoes or []
-        self._symbol_info_falha = symbol_info_falha
 
     def get_positions(self) -> list[Position]:
         return self._posicoes
-
-    def get_symbol_info(self, symbol: str) -> Any:
-        if self._symbol_info_falha:
-            raise MT5ConnectionError("symbol_info indisponível")
-        return SimpleNamespace(symbol=symbol, volume_min=0.01, contract_size=CONTRACT_SIZE)
 
 
 def _posicao(symbol: str = "EURUSD", volume: float = 0.01, preco: float = 1.1545) -> Position:
@@ -51,46 +31,6 @@ def _posicao(symbol: str = "EURUSD", volume: float = 0.01, preco: float = 1.1545
         tp=1.16,
         price_open=preco,
     )
-
-
-def _runner() -> BotRunner:
-    return BotRunner(symbols=["EURUSD"], settings=Settings(_env_file=None))
-
-
-# --- exposição -------------------------------------------------------------
-def test_exposicao_usa_contract_size() -> None:
-    """0.01 lote de EURUSD é US$ 1.154 de exposição, não US$ 0,0115.
-
-    Sem o contract_size a exposição sai subestimada em cinco ordens de grandeza
-    e o limite de 3% do equity nunca dispara.
-    """
-    runner = _runner()
-    client = FakeClient([_posicao()])
-
-    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
-
-    esperado = 0.01 * CONTRACT_SIZE * 1.1545
-    assert exposicao == pytest.approx(esperado)
-
-
-def test_exposicao_soma_todas_as_posicoes() -> None:
-    runner = _runner()
-    client = FakeClient([_posicao(), _posicao("GBPUSD", preco=1.3467)])
-
-    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
-
-    esperado = 0.01 * CONTRACT_SIZE * 1.1545 + 0.01 * CONTRACT_SIZE * 1.3467
-    assert exposicao == pytest.approx(esperado)
-
-
-def test_exposicao_assume_contrato_padrao_quando_broker_nao_responde() -> None:
-    """Subestimar exposição é o erro perigoso; ignorar a posição seria isso."""
-    runner = _runner()
-    client = FakeClient([_posicao()], symbol_info_falha=True)
-
-    exposicao = runner._exposicao_aberta_monetaria(client)  # type: ignore[arg-type]
-
-    assert exposicao == pytest.approx(0.01 * CONTRACT_SIZE * 1.1545)
 
 
 # --- uma posição por símbolo ----------------------------------------------

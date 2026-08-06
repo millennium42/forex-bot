@@ -37,14 +37,10 @@ def valid_request() -> OrderRequest:
 def test_risk_manager_accepts_valid_order(
     risk_manager: RiskManager, valid_request: OrderRequest
 ) -> None:
-    # 1% de 10000 = 100
-    # Exposicao total limite = 300
     risk_manager.validate_order(
         request=valid_request,
         equity=10000.0,
         daily_loss=0.0,
-        current_exposure_monetary=100.0,
-        trade_monetary_risk=50.0,
     )
     # Não deve levantar exceção
 
@@ -65,36 +61,6 @@ def test_risk_manager_rejects_without_sl(
             request=req,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=50.0,
-        )
-
-
-def test_risk_manager_rejects_exceeding_max_risk_per_trade(
-    risk_manager: RiskManager, valid_request: OrderRequest
-) -> None:
-    # Equity = 10000, max risk = 1% = 100
-    with pytest.raises(RiskValidationError, match="excede limite por trade"):
-        risk_manager.validate_order(
-            request=valid_request,
-            equity=10000.0,
-            daily_loss=0.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=101.0,
-        )
-
-
-def test_risk_manager_rejects_exceeding_total_exposure(
-    risk_manager: RiskManager, valid_request: OrderRequest
-) -> None:
-    # Equity = 10000, max exposure = 3% = 300
-    with pytest.raises(RiskValidationError, match="excede limite"):
-        risk_manager.validate_order(
-            request=valid_request,
-            equity=10000.0,
-            daily_loss=0.0,
-            current_exposure_monetary=260.0,
-            trade_monetary_risk=50.0,
         )
 
 
@@ -107,8 +73,6 @@ def test_risk_manager_kill_switch_daily_loss(
             request=valid_request,
             equity=10000.0,
             daily_loss=500.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=50.0,
         )
 
 
@@ -121,8 +85,6 @@ def test_risk_manager_ftmo_max_drawdown(
             request=valid_request,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=50.0,
             account_drawdown=1000.0,
         )
 
@@ -139,8 +101,6 @@ def test_risk_manager_ftmo_daily_loss(
             request=valid_request,
             equity=10000.0,
             daily_loss=500.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=50.0,
         )
 
 
@@ -161,8 +121,6 @@ def test_risk_manager_rejects_volume_below_broker_minimum(
             request=req,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=50.0,
         )
 
 
@@ -182,8 +140,6 @@ def test_risk_manager_accepts_volume_equal_to_broker_minimum(
         request=req,
         equity=10000.0,
         daily_loss=0.0,
-        current_exposure_monetary=0.0,
-        trade_monetary_risk=50.0,
     )
     # Não deve levantar exceção
 
@@ -196,58 +152,7 @@ def test_risk_manager_kill_switch_active(
             request=valid_request,
             equity=10000.0,
             daily_loss=0.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=50.0,
             kill_switch_active=True,
-        )
-
-
-def test_risk_manager_rejects_real_exposure_above_cap_in_monetary_units(
-    risk_manager: RiskManager, valid_request: OrderRequest
-) -> None:
-    """Reproduz o bug da história 28: exposição real acima do teto era aceita.
-
-    Antes, `_exposicao_aberta` devolvia percentual (ex: 3.5) e esse número era
-    somado direto a um risco monetário e comparado com um teto monetário. Com
-    equity=100_000 e teto de 3% (US$ 3.000), uma exposição real de US$ 3.100
-    (posições de fato abertas na conta) tem que ser rejeitada — no código
-    antigo ela "cabia" porque UM PERCENTUAL como 3.5 nunca ultrapassa 3.000.
-    """
-    with pytest.raises(RiskValidationError, match="excede limite"):
-        risk_manager.validate_order(
-            request=valid_request,
-            equity=100_000.0,
-            daily_loss=0.0,
-            current_exposure_monetary=3_100.0,
-            trade_monetary_risk=10.0,
-        )
-
-
-def test_risk_manager_accepts_exposure_exactly_at_the_cap(
-    risk_manager: RiskManager, valid_request: OrderRequest
-) -> None:
-    # Equity = 10000, teto de exposição = 3% = 300. Na fronteira exata, aceita.
-    risk_manager.validate_order(
-        request=valid_request,
-        equity=10000.0,
-        daily_loss=0.0,
-        current_exposure_monetary=250.0,
-        trade_monetary_risk=50.0,
-    )
-    # Não deve levantar exceção
-
-
-def test_risk_manager_rejects_exposure_just_above_the_cap(
-    risk_manager: RiskManager, valid_request: OrderRequest
-) -> None:
-    # Mesmo cenário do teste anterior, um centavo acima da fronteira: rejeita.
-    with pytest.raises(RiskValidationError, match="excede limite"):
-        risk_manager.validate_order(
-            request=valid_request,
-            equity=10000.0,
-            daily_loss=0.0,
-            current_exposure_monetary=250.01,
-            trade_monetary_risk=50.0,
         )
 
 
@@ -259,8 +164,6 @@ def test_risk_manager_rejects_non_positive_equity(
             request=valid_request,
             equity=0.0,
             daily_loss=0.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=50.0,
         )
 
 
@@ -272,6 +175,90 @@ def test_risk_manager_rejects_negative_equity(
             request=valid_request,
             equity=-500.0,
             daily_loss=0.0,
-            current_exposure_monetary=0.0,
-            trade_monetary_risk=50.0,
+        )
+
+
+# -- história 32: perfil agressivo — teto de tamanho vira só VOLUME_MAX_PER_ORDER_LOTS ---
+#
+# Risco por trade (1%) e exposição agregada (3%) bloqueavam ordem antes desta
+# história (ver git history de test_risk_manager.py). A pedido do operador,
+# esses tetos artificiais de TAMANHO saíram do risk_manager: o único limite de
+# tamanho que resta aqui é `volume_max_per_order_lots` (a margem livre real é
+# aplicada no runner, que é quem conhece leverage/margin_free da conta).
+
+
+def test_risk_manager_accepts_order_even_with_equity_too_small_for_old_risk_cap(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    """`validate_order` não recebe mais `trade_monetary_risk`/`current_exposure_monetary`.
+
+    Antes desta história, uma equity de US$100 (1% de risco = US$1) rejeitava
+    qualquer trade cujo risco monetário não coubesse nesse valor. Sem esses
+    dois parâmetros, o único fator de equity que ainda pode bloquear é kill
+    switch/drawdown — uma ordem válida (SL presente, dentro do teto de
+    volume) passa independente do tamanho da equity.
+    """
+    risk_manager.validate_order(
+        request=valid_request,
+        equity=100.0,
+        daily_loss=0.0,
+    )
+    # Não deve levantar exceção.
+
+
+def test_risk_manager_rejects_volume_above_max_per_order(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    req = OrderRequest(
+        symbol=valid_request.symbol,
+        side=valid_request.side,
+        volume=2.01,
+        price=valid_request.price,
+        stop_loss=valid_request.stop_loss,
+        take_profit=valid_request.take_profit,
+    )
+    with pytest.raises(RiskValidationError, match=r"excede o teto de 2\.0 lotes por ordem"):
+        risk_manager.validate_order(
+            request=req,
+            equity=1_000_000.0,
+            daily_loss=0.0,
+        )
+
+
+def test_risk_manager_accepts_volume_exactly_at_max_per_order(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    req = OrderRequest(
+        symbol=valid_request.symbol,
+        side=valid_request.side,
+        volume=2.0,
+        price=valid_request.price,
+        stop_loss=valid_request.stop_loss,
+        take_profit=valid_request.take_profit,
+    )
+    risk_manager.validate_order(
+        request=req,
+        equity=1_000_000.0,
+        daily_loss=0.0,
+    )
+    # Não deve levantar exceção — na fronteira exata, aceita.
+
+
+def test_risk_manager_respects_configured_volume_max_per_order(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    risk_manager.settings.volume_max_per_order_lots = 0.5
+    req = OrderRequest(
+        symbol=valid_request.symbol,
+        side=valid_request.side,
+        volume=0.6,
+        price=valid_request.price,
+        stop_loss=valid_request.stop_loss,
+        take_profit=valid_request.take_profit,
+    )
+    with pytest.raises(RiskValidationError, match=r"excede o teto de 0\.5 lotes por ordem"):
+        risk_manager.validate_order(
+            request=req,
+            equity=1_000_000.0,
+            daily_loss=0.0,
         )

@@ -37,8 +37,6 @@ class RiskManager:
         request: OrderRequest,
         equity: float,
         daily_loss: float,
-        current_exposure_monetary: float,
-        trade_monetary_risk: float,
         account_drawdown: float = 0.0,
         kill_switch_active: bool = False,
     ) -> None:
@@ -87,29 +85,15 @@ class RiskManager:
                 f"Volume {request.volume} abaixo do mínimo do broker de {request.min_volume}"
             )
 
-        # 3. 1% por trade
-        max_risk_per_trade = equity * (self.settings.max_risk_per_trade_pct / 100.0)
-        if trade_monetary_risk > max_risk_per_trade:
+        # 3. Teto duro de tamanho por ordem (história 32 — perfil agressivo)
+        #
+        # A pedido do operador, o risco por trade (1%) e a exposição agregada
+        # (3%) deixaram de bloquear ordem: o único limite de TAMANHO que resta
+        # é este valor fixo de lotes, nunca calculado a partir de risco. Kill
+        # switch de perda diária e drawdown do pico (checados acima) continuam
+        # de pé — protegem a conta, não limitam o tamanho da ordem.
+        if request.volume > self.settings.volume_max_per_order_lots:
             raise RiskValidationError(
-                f"Risco de {trade_monetary_risk} excede limite por trade de {max_risk_per_trade}"
-            )
-
-        # 4. Exposição agregada (§4 do PRD: 3% somando todas as posições)
-        #
-        # "Exposição" aqui é **risco agregado**, não nocional. Vem do próprio
-        # PRD, que fixa 1% por trade e 3% no total: são a mesma unidade, e o
-        # total é o teto de quantos trades simultâneos cabem (3% / 0,5% = 6).
-        #
-        # Medir nocional aqui seria incoerente com o "1% por trade" e tornaria
-        # o limite inatingível: em forex alavancado, 3% de nocional numa conta
-        # de 100k é 0,02 lote — menos que o mínimo do broker. Foi essa leitura
-        # errada que fez o limite parecer quebrado e ser desativado.
-        #
-        # Tudo monetário na moeda da conta; nenhum percentual cruza a fronteira.
-        new_exposure_monetary = current_exposure_monetary + trade_monetary_risk
-        max_exposure_monetary = equity * (self.settings.max_total_exposure_pct / 100.0)
-        if new_exposure_monetary > max_exposure_monetary:
-            raise RiskValidationError(
-                f"Exposição agregada de {new_exposure_monetary} excede "
-                f"limite de {max_exposure_monetary}"
+                f"Volume {request.volume} excede o teto de "
+                f"{self.settings.volume_max_per_order_lots} lotes por ordem"
             )

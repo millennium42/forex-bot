@@ -4,8 +4,8 @@ O runner é onde o pipeline inteiro se encontra, então os testes aqui garantem
 que nenhum número usado pelo risk manager é inventado: kill switch bloqueia o
 ciclo inteiro, ATR inválido não vira ordem, o stop é derivado da volatilidade
 medida (não constante), a idempotência tem granularidade de minuto, a perda do
-dia vem só de outcomes negativos de hoje, a exposição enxerga posição aberta
-fora do bot, e falha de MT5 encerra o ciclo em vez de pular o símbolo.
+dia vem só de outcomes negativos de hoje, e falha de MT5 encerra o ciclo em
+vez de pular o símbolo.
 """
 
 from __future__ import annotations
@@ -333,7 +333,10 @@ def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
-    atr = 0.0010
+    # ATR grande o bastante para o volume calculado pelo risco ficar abaixo do
+    # teto de tamanho da história 32 (default 2.0 lotes) — este teste cobre só
+    # a derivação por risco (história 30), não a interação com o teto.
+    atr = 0.0020
     runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
 
     trade = session.execute(select(Trade)).scalars().one()
@@ -341,7 +344,26 @@ def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
     esperado = (100_000.0 * runner.settings.max_risk_per_trade_pct / 100.0) / (
         distancia_sl * instrumento.contract_size
     )
+    assert esperado < runner.settings.volume_max_per_order_lots
     assert trade.volume == pytest.approx(esperado)
+
+
+def test_executar_volume_nunca_excede_o_teto_por_ordem(session: Session) -> None:
+    """História 32: perfil agressivo — VOLUME_MAX_POR_ORDEM é o teto duro de tamanho.
+
+    ATR pequeno faz o risco calculado (história 30) pedir mais que o teto fixo
+    de lotes; o volume final tem que ficar preso no teto, nunca no valor bruto.
+    """
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0010  # risco bruto pediria 2.5 lotes, acima do teto de 2.0
+    runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    assert trade.volume == pytest.approx(runner.settings.volume_max_per_order_lots)
 
 
 def _instrumento_padrao(**overrides: object) -> Instrument:
@@ -522,44 +544,6 @@ def test_perda_do_dia_sem_posicoes_abertas_e_so_o_realizado(session: Session) ->
     _outcome_de(session, pnl=-40.0, created_at=datetime.now(UTC))
 
     assert BotRunner._perda_do_dia(session, _client()) == pytest.approx(40.0)
-
-
-# -- exposição enxerga posição aberta fora do bot (AC6) -----------------------
-
-
-def test_exposicao_aberta_inclui_posicoes_abertas_fora_do_bot() -> None:
-    posicoes_manuais = (
-        SimpleNamespace(
-            ticket=1,
-            identifier=1,
-            symbol="EURUSD",
-            volume=0.5,
-            type=0,
-            sl=0.0,
-            tp=0.0,
-            price_open=1.1000,
-        ),
-        SimpleNamespace(
-            ticket=2,
-            identifier=2,
-            symbol="GBPUSD",
-            volume=0.2,
-            type=1,
-            sl=0.0,
-            tp=0.0,
-            price_open=1.3000,
-        ),
-    )
-    client = _client(FakeTerminal(positions=posicoes_manuais))
-
-    exposicao = _runner()._exposicao_aberta_monetaria(client)
-
-    # O contract_size entra na conta: 0.5 lote não é 0,55 de exposição, é 55.000.
-    # O valor devolvido é monetário — não um percentual do equity (história 28:
-    # misturar as duas unidades era o bug que fazia o teto de 3% nunca disparar).
-    contrato = 100_000.0
-    exposto = abs(0.5 * contrato * 1.1000) + abs(0.2 * contrato * 1.3000)
-    assert exposicao == pytest.approx(exposto)
 
 
 # -- falha de MT5 encerra o ciclo em vez de pular o símbolo (AC7) ------------

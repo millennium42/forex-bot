@@ -2,16 +2,19 @@
 
 Este é o único módulo onde o pipeline inteiro se encontra, e por isso é onde um
 valor inventado causa mais estrago: o risk manager só protege se os números que
-recebe forem reais. Nada aqui é hard-coded — equity vem do broker, exposição
-vem das posições abertas, perda do dia vem do banco, e o stop vem da
-volatilidade medida.
+recebe forem reais. Nada aqui é hard-coded — equity vem do broker, perda do dia
+vem do banco, e o stop vem da volatilidade medida.
 
-Postura de alavancagem: **dimensionada pelo risco, não pelo lote**. O volume da
-ordem é derivado de `MAX_RISK_PER_TRADE_PCT` do equity e da distância do stop
-(história 30) — quanto mais volátil o par, menor o lote para o mesmo risco
-monetário. Quando o risco configurado não paga nem o lote mínimo do broker, a
-ordem é rejeitada em vez de sair sub-dimensionada (lote mínimo) ou
-sobre-arriscada (arredondar para cima).
+Postura de alavancagem: **dimensionada pelo risco, com teto de tamanho fixo**.
+O volume de partida é derivado de `MAX_RISK_PER_TRADE_PCT` do equity e da
+distância do stop (história 30) — quanto mais volátil o par, menor o lote para
+o mesmo risco monetário. A partir daí (história 32, perfil agressivo), o único
+que ainda pode reduzir esse volume é `VOLUME_MAX_PER_ORDER_LOTS` (teto fixo) e
+a margem livre real da conta — risco por trade e exposição agregada não
+bloqueiam mais ordem. Quando o risco configurado não paga nem o lote mínimo do
+broker, ou a margem livre não cobre nem o lote mínimo, a ordem é rejeitada em
+vez de sair sub-dimensionada (lote mínimo) ou sobre-arriscada (arredondar para
+cima).
 """
 
 from __future__ import annotations
@@ -329,9 +332,14 @@ class BotRunner:
             )
             return
 
+        # Teto duro de tamanho por ordem (história 32): nunca acima do que o
+        # operador fixou, independente do que o risco calculado pediria.
+        volume = min(volume, self.settings.volume_max_per_order_lots)
+
         # Previne erro "No money" limitando o volume à margem livre real da conta
+        folga_margem = self.settings.margin_free_buffer_pct / 100.0
         margin_req_per_lot = (instrument.contract_size * entry) / account.leverage
-        max_vol_by_margin = (account.margin_free * 0.95) / margin_req_per_lot
+        max_vol_by_margin = (account.margin_free * folga_margem) / margin_req_per_lot
         passos_margem = math.floor(max_vol_by_margin / instrument.volume_step + 1e-9)
         volume_limite_margem = round(passos_margem * instrument.volume_step, 8)
         volume = min(volume, volume_limite_margem)
@@ -343,8 +351,6 @@ class BotRunner:
                 margin_free=account.margin_free,
             )
             return
-
-        risco_monetario = distancia_sl * volume * instrument.contract_size
 
         order_manager.place_order(
             request=OrderRequest(
@@ -360,8 +366,6 @@ class BotRunner:
             instrument_id=instrument.id,
             equity=account.equity,
             daily_loss=self._perda_do_dia(session, client),
-            current_exposure_monetary=self._exposicao_aberta_monetaria(client),
-            trade_monetary_risk=risco_monetario,
             signal_id=signal_id,
         )
 
@@ -400,41 +404,6 @@ class BotRunner:
         perda_flutuante = max(0.0, -flutuante)
 
         return abs(float(realizado)) + perda_flutuante
-
-    def _exposicao_aberta_monetaria(self, client: MT5Client) -> float:
-        """Risco agregado das posições abertas, em valor monetário.
-
-        **Risco, não nocional.** É quanto se perde se todos os stops forem
-        atingidos — a mesma unidade do limite por trade, como o §4 do PRD
-        pressupõe ao fixar 1% por trade e 3% no total.
-
-        Medir nocional aqui tornava o limite inatingível: 3% de nocional numa
-        conta de 100k é 0,02 lote, menos que o mínimo do broker. O sintoma era
-        o limite parecer quebrado; a reação foi desativá-lo.
-
-        Vem do broker, não do banco: posição aberta por fora do bot consome
-        risco da conta do mesmo jeito.
-
-        Posição **sem stop** é o caso perigoso — a perda é ilimitada e não há
-        número honesto a somar. Usa-se o nocional como piso: é o pior caso se
-        o preço for a zero, e força o limite a barrar em vez de ignorar.
-        """
-        risco_total = 0.0
-        for p in client.get_positions():
-            try:
-                contract_size = client.get_symbol_info(p.symbol).contract_size
-            except MT5ConnectionError:
-                # Símbolo sem metadados: assume o contrato padrão em vez de
-                # ignorar a posição. Subestimar risco é o erro perigoso.
-                contract_size = 100_000.0
-
-            # Sem stop: sem perda máxima definida. Conta o nocional inteiro para
-            # que o limite dispare, em vez de somar zero e ignorar a posição.
-            distancia = abs(p.price_open - p.sl) if p.sl and p.sl > 0 else p.price_open
-
-            risco_total += abs(distancia * p.volume * contract_size)
-
-        return risco_total
 
     @staticmethod
     def _tem_posicao_aberta(client: MT5Client, symbol: str) -> bool:

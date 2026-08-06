@@ -22,6 +22,16 @@ Adaptado de [snarktank/ralph](https://github.com/snarktank/ralph) e utilizando o
    uv run pytest --cov=backend --cov-report=term-missing
    ```
 
+   **Rode o `pytest` em primeiro plano, com timeout de 600000 ms.** A suíte leva
+   cerca de 60s com Postgres e Redis no ar. Não a jogue em background para
+   "aguardar a notificação": você está num loop headless, o turno termina antes
+   da notificação chegar, a história não é commitada e o loop para achando que
+   travou. Isso já aconteceu três vezes.
+
+   Se a suíte passar de ~2 minutos, o Docker provavelmente está parado e os
+   testes `integration` estão esperando timeout de conexão. Rode
+   `docker compose up -d` e tente de novo, em vez de esperar mais.
+
 7. Se algo falhar, **corrija antes de commitar**. Não commite código quebrado.
 8. Atualize `AGENTS.md` com padrões e gotchas reutilizáveis que você descobriu.
 9. Commit de tudo com a mensagem: `feat: [story-id] - [título da história]`.

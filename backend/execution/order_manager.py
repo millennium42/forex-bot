@@ -48,8 +48,6 @@ class OrderManager:
         instrument_id: int,
         equity: float,
         daily_loss: float,
-        current_exposure_monetary: float,
-        trade_monetary_risk: float,
         signal_id: int | None = None,
         account_drawdown: float = 0.0,
     ) -> Trade | None:
@@ -70,8 +68,6 @@ class OrderManager:
                 request=request,
                 equity=equity,
                 daily_loss=daily_loss,
-                current_exposure_monetary=current_exposure_monetary,
-                trade_monetary_risk=trade_monetary_risk,
                 account_drawdown=account_drawdown,
                 kill_switch_active=ks_active,
             )
