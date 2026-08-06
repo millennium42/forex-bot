@@ -14,7 +14,7 @@ em runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast, runtime_checkable
 
 import structlog
@@ -23,6 +23,10 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 from backend.config import Settings, get_settings
 
 logger = structlog.get_logger(__name__)
+
+# Símbolo usado só para ler o relógio do servidor de trading. Qualquer par
+# líquido serve; EURUSD é o mais universalmente disponível.
+REFERENCIA_DE_HORA = "EURUSD"
 
 # trade_mode do MT5: 0 = demo, 1 = concurso, 2 = conta real.
 MT5_TRADE_MODE_DEMO = 0
@@ -179,6 +183,9 @@ class MT5Client:
         self._terminal = terminal
         self._settings = settings or get_settings()
         self._connected = False
+        # Offset entre o relógio do servidor de trading e o UTC. Medido em
+        # connect(); zero até lá, o que degrada para o comportamento antigo.
+        self._offset_servidor = timedelta(0)
 
     # -- conexão ------------------------------------------------------------
     @property
@@ -190,6 +197,41 @@ class MT5Client:
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    def _detectar_offset_do_servidor(self) -> None:
+        """Mede quanto o relógio do servidor de trading difere do UTC.
+
+        O MT5 devolve os timestamps (tick, deal, candle) na hora do **servidor
+        de trading**, não em UTC — MetaQuotes-Demo, por exemplo, opera em GMT+3.
+        Carimbar `tz=UTC` neles cria um erro sistemático: `closed_at` (do MT5)
+        ficava 3h à frente de `opened_at` (do relógio local), e toda duração de
+        trade saía inflada nesse offset. A mínima observada em 239 outcomes era
+        de 3h, quando os trades duravam minutos.
+
+        O offset é medido comparando o tick mais recente com o relógio local, e
+        arredondado para a meia hora mais próxima: fusos são múltiplos de 30min,
+        e o arredondamento absorve a latência da chamada.
+        """
+        try:
+            raw = self.terminal.symbol_info_tick(REFERENCIA_DE_HORA)
+            if raw is None or int(raw.time) <= 0:
+                return
+        except Exception:  # pragma: no cover - depende do broker
+            return
+
+        bruto = int(raw.time) - datetime.now(UTC).timestamp()
+        meias_horas = round(bruto / 1800)
+        self._offset_servidor = timedelta(minutes=30 * meias_horas)
+
+        if self._offset_servidor:
+            logger.info(
+                "mt5.offset_do_servidor_detectado",
+                horas=self._offset_servidor.total_seconds() / 3600,
+            )
+
+    def _para_utc(self, timestamp_do_servidor: int) -> datetime:
+        """Converte timestamp do MT5 (hora do servidor) para UTC de verdade."""
+        return datetime.fromtimestamp(timestamp_do_servidor, tz=UTC) - self._offset_servidor
 
     @retry(
         retry=retry_if_exception_type(MT5ConnectionError),
@@ -224,6 +266,7 @@ class MT5Client:
                 raise MT5ConnectionError(f"login recusado para {self._settings.mt5_login}")
 
         self._connected = True
+        self._detectar_offset_do_servidor()
         account = self.get_account_info()
         self._assert_modo_compativel(account)
         logger.info(
@@ -252,6 +295,9 @@ class MT5Client:
         if self._terminal is not None:
             self._terminal.shutdown()
         self._connected = False
+        # Offset entre o relógio do servidor de trading e o UTC. Medido em
+        # connect(); zero até lá, o que degrada para o comportamento antigo.
+        self._offset_servidor = timedelta(0)
 
     def _erro(self) -> str:
         try:
@@ -304,7 +350,7 @@ class MT5Client:
 
         return Tick(
             symbol=symbol,
-            time=datetime.fromtimestamp(int(raw.time), tz=UTC),
+            time=self._para_utc(int(raw.time)),
             bid=bid,
             ask=ask,
         )
@@ -412,7 +458,7 @@ class MT5Client:
                 profit=float(getattr(d, "profit", 0.0)),
                 volume=float(getattr(d, "volume", 0.0)),
                 entry=int(getattr(d, "entry", 0)),
-                time=datetime.fromtimestamp(int(getattr(d, "time", 0)), tz=UTC),
+                time=self._para_utc(int(getattr(d, "time", 0))),
             )
             for d in raw
         ]
