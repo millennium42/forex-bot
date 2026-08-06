@@ -65,6 +65,11 @@ logger = structlog.get_logger(__name__)
 CANDLES_POR_CICLO = 120
 
 # Take profit a 2x a distância do stop: relação risco/retorno de 1:2.
+#
+# Este número não é cosmético. Com RR de 1:2 o breakeven exige ~33% de acerto;
+# invertê-lo para 0.2 (arriscar 5 para ganhar 1) exigiria 83,3% — patamar que
+# nenhuma estratégia técnica sustenta. Alterar aqui muda a viabilidade
+# matemática do sistema inteiro, não só o tamanho do alvo.
 RR_RATIO = 2.0
 
 
@@ -324,6 +329,21 @@ class BotRunner:
             )
             return
 
+        # Previne erro "No money" limitando o volume à margem livre real da conta
+        margin_req_per_lot = (instrument.contract_size * entry) / account.leverage
+        max_vol_by_margin = (account.margin_free * 0.95) / margin_req_per_lot
+        passos_margem = math.floor(max_vol_by_margin / instrument.volume_step + 1e-9)
+        volume_limite_margem = round(passos_margem * instrument.volume_step, 8)
+        volume = min(volume, volume_limite_margem)
+
+        if volume < instrument.min_volume:
+            logger.info(
+                "runner.margem_insuficiente",
+                symbol=symbol,
+                margin_free=account.margin_free,
+            )
+            return
+
         risco_monetario = distancia_sl * volume * instrument.contract_size
 
         order_manager.place_order(
@@ -382,31 +402,39 @@ class BotRunner:
         return abs(float(realizado)) + perda_flutuante
 
     def _exposicao_aberta_monetaria(self, client: MT5Client) -> float:
-        """Exposição das posições abertas, em valor monetário (moeda da conta).
+        """Risco agregado das posições abertas, em valor monetário.
 
-        Vem do broker, não do banco: posição aberta por fora do bot ainda
-        consome risco da conta e precisa contar no limite de exposição. O
-        retorno é sempre monetário, nunca percentual — o risk manager soma
-        este valor direto a `trade_monetary_risk` (também monetário) e
-        compara com um teto monetário. Devolver percentual aqui foi o bug da
-        história 28: o teto de 3% praticamente nunca disparava porque um
-        número como "1.15" (%) era tratado como US$ 1,15.
+        **Risco, não nocional.** É quanto se perde se todos os stops forem
+        atingidos — a mesma unidade do limite por trade, como o §4 do PRD
+        pressupõe ao fixar 1% por trade e 3% no total.
 
-        O `contract_size` é indispensável aqui. Sem ele, 0.01 lote de EURUSD
-        conta como US$ 0,0115 em vez de US$ 1.154 — a exposição sai subestimada
-        em cinco ordens de grandeza e o limite de exposição nunca dispara.
+        Medir nocional aqui tornava o limite inatingível: 3% de nocional numa
+        conta de 100k é 0,02 lote, menos que o mínimo do broker. O sintoma era
+        o limite parecer quebrado; a reação foi desativá-lo.
+
+        Vem do broker, não do banco: posição aberta por fora do bot consome
+        risco da conta do mesmo jeito.
+
+        Posição **sem stop** é o caso perigoso — a perda é ilimitada e não há
+        número honesto a somar. Usa-se o nocional como piso: é o pior caso se
+        o preço for a zero, e força o limite a barrar em vez de ignorar.
         """
-        exposto = 0.0
+        risco_total = 0.0
         for p in client.get_positions():
             try:
                 contract_size = client.get_symbol_info(p.symbol).contract_size
             except MT5ConnectionError:
                 # Símbolo sem metadados: assume o contrato padrão em vez de
-                # ignorar a posição. Subestimar exposição é o erro perigoso.
+                # ignorar a posição. Subestimar risco é o erro perigoso.
                 contract_size = 100_000.0
-            exposto += abs(p.volume * contract_size * p.price_open)
 
-        return exposto
+            # Sem stop: sem perda máxima definida. Conta o nocional inteiro para
+            # que o limite dispare, em vez de somar zero e ignorar a posição.
+            distancia = abs(p.price_open - p.sl) if p.sl and p.sl > 0 else p.price_open
+
+            risco_total += abs(distancia * p.volume * contract_size)
+
+        return risco_total
 
     @staticmethod
     def _tem_posicao_aberta(client: MT5Client, symbol: str) -> bool:
@@ -485,11 +513,11 @@ class BotRunner:
 
     @staticmethod
     def _client_request_id(symbol: str, side: Side) -> str:
-        """Chave de idempotência com granularidade de minuto.
+        """Chave de idempotência com granularidade de 5.5 minutos.
 
-        Dois ciclos dentro do mesmo minuto, no mesmo símbolo e lado, produzem o
-        mesmo id — a segunda tentativa colide no UNIQUE de `trades` em vez de
-        abrir uma segunda posição idêntica.
+        Dois ciclos dentro do mesmo bloco de 330 segundos, no mesmo símbolo e lado,
+        produzem o mesmo id — a segunda tentativa colide no UNIQUE de `trades`.
         """
-        janela = datetime.now(UTC).replace(second=0, microsecond=0)
-        return f"bot-{symbol}-{side.value}-{janela:%Y%m%d%H%M}"
+        now = datetime.now(UTC)
+        bucket = int(now.timestamp() // 330)
+        return f"bot-{symbol}-{side.value}-{bucket}"

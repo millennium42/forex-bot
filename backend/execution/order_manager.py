@@ -81,6 +81,19 @@ class OrderManager:
                 trigger_kill_switch(self.db, reason=str(exc), actor="system")
 
             logger.warning("order_manager.risk_rejected", reason=str(exc))
+            mode = self.risk_manager.settings.effective_trading_mode.value
+            trade = Trade(
+                client_request_id=client_request_id,
+                instrument_id=instrument_id,
+                signal_id=signal_id,
+                side=request.side,
+                status=TradeStatus.REJECTED,
+                volume=request.volume,
+                stop_loss=request.stop_loss or 0.0,
+                take_profit=request.take_profit,
+                trading_mode=mode,
+            )
+            self.db.add(trade)
             event = AuditLog(
                 event_type=AuditEventType.ORDER_REJECTED,
                 client_request_id=client_request_id,
@@ -91,6 +104,19 @@ class OrderManager:
             return None
         except RiskValidationError as exc:
             logger.warning("order_manager.risk_rejected", reason=str(exc))
+            mode = self.risk_manager.settings.effective_trading_mode.value
+            trade = Trade(
+                client_request_id=client_request_id,
+                instrument_id=instrument_id,
+                signal_id=signal_id,
+                side=request.side,
+                status=TradeStatus.REJECTED,
+                volume=request.volume,
+                stop_loss=request.stop_loss or 0.0,
+                take_profit=request.take_profit,
+                trading_mode=mode,
+            )
+            self.db.add(trade)
             event = AuditLog(
                 event_type=AuditEventType.ORDER_REJECTED,
                 client_request_id=client_request_id,

@@ -94,15 +94,22 @@ class RiskManager:
                 f"Risco de {trade_monetary_risk} excede limite por trade de {max_risk_per_trade}"
             )
 
-        # 4. 3% de exposição
-        # Exposição total considerando a nova ordem. Tudo aqui é valor monetário
-        # na moeda da conta — nenhum percentual cruza esta fronteira. Comparar
-        # percentual com dólar foi o bug da história 28: um teto de 3%
-        # praticamente nunca disparava porque o número somado era 100x menor
-        # do que deveria.
+        # 4. Exposição agregada (§4 do PRD: 3% somando todas as posições)
+        #
+        # "Exposição" aqui é **risco agregado**, não nocional. Vem do próprio
+        # PRD, que fixa 1% por trade e 3% no total: são a mesma unidade, e o
+        # total é o teto de quantos trades simultâneos cabem (3% / 0,5% = 6).
+        #
+        # Medir nocional aqui seria incoerente com o "1% por trade" e tornaria
+        # o limite inatingível: em forex alavancado, 3% de nocional numa conta
+        # de 100k é 0,02 lote — menos que o mínimo do broker. Foi essa leitura
+        # errada que fez o limite parecer quebrado e ser desativado.
+        #
+        # Tudo monetário na moeda da conta; nenhum percentual cruza a fronteira.
         new_exposure_monetary = current_exposure_monetary + trade_monetary_risk
         max_exposure_monetary = equity * (self.settings.max_total_exposure_pct / 100.0)
         if new_exposure_monetary > max_exposure_monetary:
             raise RiskValidationError(
-                f"Exposição de {new_exposure_monetary} excede limite de {max_exposure_monetary}"
+                f"Exposição agregada de {new_exposure_monetary} excede "
+                f"limite de {max_exposure_monetary}"
             )

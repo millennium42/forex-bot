@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     # sempre o lote mínimo — 0.5% é o teto conservador até haver amostra real
     # de resultado para recalibrar.
     max_risk_per_trade_pct: float = Field(default=0.5, gt=0, le=100)
+    # Risco agregado de todas as posições abertas, mesma unidade do limite por
+    # trade. 3% / 0,5% = até 6 posições simultâneas no pior caso.
     max_total_exposure_pct: float = Field(default=3.0, gt=0, le=100)
     max_daily_loss_pct: float = Field(default=5.0, gt=0, le=100)
     atr_sl_multiplier: float = Field(default=2.0, gt=0)

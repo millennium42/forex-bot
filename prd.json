@@ -371,6 +371,87 @@
         "teste: instrumento existente com contract_size desatualizado e corrigido no ciclo"
       ],
       "passes": true
+    },
+    {
+      "id": 32,
+      "title": "Perfil agressivo: margem do broker como unico teto de tamanho",
+      "description": "A pedido explicito do operador, os tetos artificiais de tamanho saem de cena: o unico limite de VOLUME passa a ser a margem livre real da conta (o 'No money' do MT5). Kill switch de perda diaria e drawdown do pico CONTINUAM valendo - eles protegem a conta, nao limitam o tamanho da ordem. Volume por ordem nunca passa de 2.0 lotes.",
+      "acceptanceCriteria": [
+        "limite de exposicao agregada deixa de bloquear ordem",
+        "limite de risco por trade deixa de bloquear ordem",
+        "VOLUME_MAX_POR_ORDEM=2.0 configuravel; volume final nunca excede",
+        "volume limitado pela margem livre real (com folga configuravel), arredondado para baixo",
+        "margem insuficiente para o lote minimo rejeita com log claro, sem enviar ao broker",
+        "kill switch diario e drawdown do pico continuam bloqueando o ciclo",
+        "testes antigos de exposicao/risco por trade atualizados ou removidos com justificativa"
+      ],
+      "passes": false
+    },
+    {
+      "id": 33,
+      "title": "Stop e alvo do perfil agressivo",
+      "description": "SL a 1.0x ATR e TP a 0.2x ATR, a pedido do operador (scalping: alvo curto, stop largo). Ambos configuraveis. Registrar no docstring que este RR exige ~83% de win rate para breakeven, para que o numero nunca seja alterado por engano de novo.",
+      "acceptanceCriteria": [
+        "ATR_SL_MULTIPLIER default 1.0",
+        "RR_RATIO vira configuravel (TAKE_PROFIT_RR) com default 0.2",
+        "docstring registra o win rate de breakeven implicado pelo RR configurado",
+        "teste: SL e TP derivados do ATR com os multiplicadores configurados"
+      ],
+      "passes": false
+    },
+    {
+      "id": 34,
+      "title": "Multiplas posicoes por simbolo com leitura distinta",
+      "description": "A trava de 'uma posicao por simbolo' sai, mas o bot nao pode reabrir a MESMA leitura de mercado a cada ciclo. Nova posicao no mesmo simbolo so e permitida se a leitura for materialmente diferente da que originou as posicoes ja abertas.",
+      "acceptanceCriteria": [
+        "posicao nova no mesmo simbolo e permitida quando a direcao difere das abertas",
+        "mesma direcao so e permitida apos SIGNAL_REPEAT_COOLDOWN_MINUTES desde o ultimo sinal executado naquele simbolo+direcao",
+        "o cooldown e lido dos Signal/Trade persistidos, nao de estado em memoria",
+        "teste: dois ciclos seguidos com o mesmo sinal nao abrem duas posicoes",
+        "teste: sinal invertido no mesmo simbolo abre posicao mesmo com uma ja aberta",
+        "teste: mesma direcao apos o cooldown abre nova posicao"
+      ],
+      "passes": false
+    },
+    {
+      "id": 35,
+      "title": "Alpha factors classicos no technical analyzer",
+      "description": "Amplia o technical_analyzer com fatores alpha do repertorio quant (estilo Machine-Learning-for-Trading e Qlib Alpha158), implementados com pandas/ta sem dependencia nova: momentum multi-janela, reversao a media normalizada, volatilidade relativa e forca de tendencia. Cada fator vira componente com peso, entrando na mesma media ponderada dos indicadores atuais.",
+      "acceptanceCriteria": [
+        "cada fator devolve score em [-1,1] e entra em components",
+        "sem dependencia nova: pandas e ta apenas",
+        "fator indefinido (serie curta, divisao por zero) devolve neutro com confianca 0, nunca valor forjado",
+        "normalizacao por volatilidade onde o fator estiver em unidade de preco",
+        "teste com series fixtures deterministicas por fator (alta, baixa, lateral)",
+        "signal.inputs passa a registrar todos os fatores para auditoria posterior"
+      ],
+      "passes": false
+    },
+    {
+      "id": 36,
+      "title": "Dashboard simplificado e fiel ao dado",
+      "description": "O dashboard mostra numero que nao corresponde a realidade e informacao demais. Reduzir ao que o operador precisa para decidir: estado da conta, o que esta aberto agora, o que foi decidido e por que, e o que bloqueou. Remover grafico e card que nao se sustenta com o dado existente.",
+      "acceptanceCriteria": [
+        "todo numero exibido vem da API, nenhum mock ou valor derivado de suposicao",
+        "serie sem dado suficiente mostra estado vazio explicito, nunca grafico vazio ou zero",
+        "posicoes abertas batem com o broker, nao so com o banco",
+        "mostra por que a ultima ordem foi bloqueada (kill switch, margem, cooldown, confianca)",
+        "remover abas/graficos que nao tem dado real por tras",
+        "tsc --noEmit e eslint limpos"
+      ],
+      "passes": false
+    },
+    {
+      "id": 37,
+      "title": "Auditoria continua do banco",
+      "description": "Comando que acompanha em tempo real o que o bot esta gravando: sinais, trades, outcomes, rejeicoes e eventos de auditoria, com o motivo de cada bloqueio.",
+      "acceptanceCriteria": [
+        "scripts/auditar_db.py com --follow imprime novidades conforme aparecem",
+        "resumo por ciclo: sinais avaliados, executados, bloqueados e o motivo de cada bloqueio",
+        "estado atual: equity, pico, drawdown, kill switch, posicoes abertas",
+        "sem PII e sem credencial na saida"
+      ],
+      "passes": false
     }
   ]
 }
