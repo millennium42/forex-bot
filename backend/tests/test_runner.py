@@ -34,7 +34,8 @@ from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import RiskManager
 from backend.execution.runner import BotRunner
 from backend.learning.outcome_recorder import record_outcome
-from backend.models.enums import Direction, Side, TradeStatus
+from backend.models.audit_log import AuditLog
+from backend.models.enums import AuditEventType, Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
@@ -48,6 +49,20 @@ SELL_SIGNAL = FusedSignal(
 
 def _instrumento(session: Session, client: MT5Client, symbol: str = "EURUSD") -> Instrument:
     return BotRunner._get_or_create_instrument(session, symbol, client)
+
+
+def _motivos_bloqueio(session: Session) -> list[str]:
+    """Motivos gravados em `ORDER_BLOCKED` (história 36), na ordem em que ocorreram."""
+    eventos = (
+        session.execute(
+            select(AuditLog)
+            .where(AuditLog.event_type == AuditEventType.ORDER_BLOCKED)
+            .order_by(AuditLog.id)
+        )
+        .scalars()
+        .all()
+    )
+    return [str(e.payload["motivo"]) for e in eventos]
 
 
 class _FixedDatetime(datetime):
@@ -68,6 +83,7 @@ class FakeTerminal:
         tick: Any = None,
         retcode: int | None = 10009,
         equity: float = 100_000.0,
+        margin_free: float | None = None,
         candle_rows: list[dict[str, float]] | None = None,
         volume_min: float = 0.01,
         contract_size: float = 100_000.0,
@@ -76,6 +92,10 @@ class FakeTerminal:
         self._tick = tick or SimpleNamespace(time=1_700_000_000, bid=1.0850, ask=1.0852)
         self.retcode = retcode
         self.equity = equity
+        # Distinto de `equity` só quando o teste precisa isolar o gate de
+        # margem livre do gate de risco por trade (história 36) — ambos usam
+        # o mesmo campo da conta real, mas dependem de fórmulas diferentes.
+        self.margin_free = margin_free if margin_free is not None else equity
         self.candle_rows = candle_rows
         self.volume_min = volume_min
         self.contract_size = contract_size
@@ -101,7 +121,7 @@ class FakeTerminal:
             balance=self.equity,
             equity=self.equity,
             margin=0.0,
-            margin_free=self.equity,
+            margin_free=self.margin_free,
             leverage=100,
             trade_mode=0,
         )
@@ -291,6 +311,7 @@ def test_executar_atr_invalido_nao_gera_ordem(session: Session, atr_invalido: fl
     )
 
     assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["atr_invalido"]
 
 
 # -- stop loss derivado do ATR, não constante (AC3) --------------------------
@@ -444,15 +465,38 @@ def test_calcular_volume_respeita_volume_max_do_broker() -> None:
 
 
 def test_executar_ordem_rejeitada_quando_risco_nao_cobre_lote_minimo(session: Session) -> None:
-    """Risco não paga o lote mínimo: a ordem é rejeitada, nunca arredondada para cima."""
+    """Risco não paga o lote mínimo: a ordem é rejeitada, nunca arredondada para cima.
+
+    `volume_min=10.0` fica acima do volume bruto calculado pelo risco (5.0
+    lotes com estes parâmetros) para acionar só o primeiro gate
+    (`_calcular_volume` devolve `None`) — com um mínimo menor (ex.: 5.0) o
+    teto por ordem (`volume_max_per_order_lots=2.0`) entra antes e o volume
+    cai por outro motivo (margem/teto), não pela conta de risco em si.
+    """
     runner = _runner()
-    client = _client(FakeTerminal(volume_min=5.0))
+    client = _client(FakeTerminal(volume_min=10.0))
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
     runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento)
 
     assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["risco_insuficiente"]
+
+
+def test_executar_ordem_rejeitada_quando_margem_insuficiente(session: Session) -> None:
+    """Margem livre real não cobre nem o lote mínimo: a ordem é rejeitada (história 32/36)."""
+    runner = _runner()
+    # Risco por trade sozinho pediria ~5 lotes (equity alta, ATR pequeno); a
+    # margem livre real de US$5 só cobre uma fração de lote, abaixo do mínimo.
+    client = _client(FakeTerminal(equity=100_000.0, margin_free=5.0))
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0010, client, session, order_manager, instrumento)
+
+    assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["margem_insuficiente"]
 
 
 # -- história 34: múltiplas posições por símbolo, leitura distinta -----------
@@ -486,6 +530,7 @@ def test_executar_mesmo_sinal_dois_ciclos_nao_abre_duas_posicoes(session: Sessio
     runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
 
     assert len(session.execute(select(Trade)).scalars().all()) == 1
+    assert _motivos_bloqueio(session) == ["cooldown"]
 
 
 def test_executar_direcao_invertida_abre_posicao_mesmo_com_uma_ja_aberta(session: Session) -> None:
@@ -846,6 +891,7 @@ def test_process_symbol_confianca_abaixo_do_limiar_nao_executa(
     signal = session.execute(select(Signal)).scalars().one()
     assert signal.direction == Direction.BUY  # decisão é gravada mesmo rejeitada
     assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["confianca_insuficiente"]
 
 
 def test_process_symbol_confianca_igual_ao_limiar_executa(
@@ -906,6 +952,7 @@ def test_executar_com_stop_loss_nao_positivo_nao_gera_ordem(session: Session) ->
     runner._executar("EURUSD", BUY_SIGNAL, 1.0, client, session, order_manager, instrumento)
 
     assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["stop_invalido"]
 
 
 # -- run(): conecta, roda N ciclos e dorme entre eles -------------------------

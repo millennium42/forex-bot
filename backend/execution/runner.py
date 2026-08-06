@@ -23,7 +23,7 @@ import math
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy import func, select
@@ -52,7 +52,8 @@ from backend.execution.drawdown_guard import (
 from backend.execution.kill_switch import is_kill_switch_active
 from backend.execution.order_manager import OrderManager
 from backend.execution.risk_manager import OrderRequest, RiskManager, RiskValidationError
-from backend.models.enums import Direction, Side, TradeStatus
+from backend.models.audit_log import AuditLog
+from backend.models.enums import AuditEventType, Direction, Side, TradeStatus
 from backend.models.instrument import Instrument
 from backend.models.outcome import Outcome
 from backend.models.signal import Signal
@@ -151,6 +152,26 @@ class BotRunner:
                 logger.error("runner.erro_no_simbolo", symbol=symbol, erro=str(exc))
                 session.rollback()
 
+    def _registrar_bloqueio(
+        self, session: Session, motivo: str, symbol: str, **detalhes: Any
+    ) -> None:
+        """Grava por que uma ordem não saiu (história 36).
+
+        O dashboard mostra o motivo mais recente. Kill switch e drawdown já
+        persistem seu próprio motivo (históricas 18/29, eventos
+        `KILL_SWITCH_TRIGGERED`/`DRAWDOWN_LIMIT_TRIGGERED`); os demais
+        bloqueios do runner (confiança, cooldown, margem, ATR/stop inválidos,
+        risco que não cobre o lote mínimo) só existiam como log estruturado
+        (`structlog`), nunca consultável pela API.
+        """
+        session.add(
+            AuditLog(
+                event_type=AuditEventType.ORDER_BLOCKED,
+                payload={"motivo": motivo, "symbol": symbol, **detalhes},
+            )
+        )
+        session.commit()
+
     # -- um símbolo ----------------------------------------------------------
     def _process_symbol(
         self,
@@ -192,6 +213,13 @@ class BotRunner:
             logger.info(
                 "runner.confianca_insuficiente",
                 symbol=symbol,
+                confianca=round(fused.confidence, 3),
+                limiar=self.settings.min_signal_confidence,
+            )
+            self._registrar_bloqueio(
+                session,
+                "confianca_insuficiente",
+                symbol,
                 confianca=round(fused.confidence, 3),
                 limiar=self.settings.min_signal_confidence,
             )
@@ -288,6 +316,7 @@ class BotRunner:
             # ATR zero significa volatilidade não medida. Sem ela não há stop
             # defensável, e ordem sem stop defensável não sai.
             logger.warning("runner.atr_invalido", symbol=symbol, atr=atr)
+            self._registrar_bloqueio(session, "atr_invalido", symbol, atr=atr)
             return
 
         side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
@@ -296,6 +325,7 @@ class BotRunner:
         # não pode é reabrir a MESMA leitura de mercado a cada ciclo.
         if not self._pode_abrir_posicao(session, client, symbol, side):
             logger.debug("runner.leitura_repetida", symbol=symbol, direcao=side.value)
+            self._registrar_bloqueio(session, "cooldown", symbol, direcao=side.value)
             return
 
         account = client.get_account_info()
@@ -311,6 +341,7 @@ class BotRunner:
 
         if stop_loss <= 0:
             logger.warning("runner.stop_invalido", symbol=symbol, stop_loss=stop_loss)
+            self._registrar_bloqueio(session, "stop_invalido", symbol, stop_loss=stop_loss)
             return
 
         volume = self._calcular_volume(
@@ -321,6 +352,9 @@ class BotRunner:
                 "runner.risco_nao_cobre_lote_minimo",
                 symbol=symbol,
                 min_volume=instrument.min_volume,
+            )
+            self._registrar_bloqueio(
+                session, "risco_insuficiente", symbol, min_volume=instrument.min_volume
             )
             return
 
@@ -341,6 +375,9 @@ class BotRunner:
                 "runner.margem_insuficiente",
                 symbol=symbol,
                 margin_free=account.margin_free,
+            )
+            self._registrar_bloqueio(
+                session, "margem_insuficiente", symbol, margin_free=account.margin_free
             )
             return
 

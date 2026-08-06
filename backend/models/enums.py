@@ -53,3 +53,4 @@ class AuditEventType(StrEnum):
     EQUITY_PEAK_UPDATED = "equity_peak_updated"
     DRAWDOWN_LIMIT_TRIGGERED = "drawdown_limit_triggered"
     DRAWDOWN_LIMIT_RESET = "drawdown_limit_reset"
+    ORDER_BLOCKED = "order_blocked"

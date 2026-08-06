@@ -763,3 +763,50 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     `minimum_candles()` — não precisou mexer nessa constante nem em nenhum teste que a usa
     (`test_backtester.py`, `test_serie_curta_nao_produz_indicador`).
 ---
+
+## [2026-08-06] — História 36: Dashboard simplificado e fiel ao dado
+- Backend: novo `AuditEventType.ORDER_BLOCKED` (migration
+  `9b1c6e2a7f3d_add_order_blocked_audit_event.py`, `ALTER TYPE ... ADD VALUE`) e helper
+  `BotRunner._registrar_bloqueio` chamado em todo ponto de `_process_symbol`/`_executar` que
+  rejeita uma ordem sem passar pelo `risk_manager` (confiança insuficiente, cooldown/leitura
+  repetida, ATR inválido, stop inválido, risco que não cobre o lote mínimo, margem livre
+  insuficiente) — antes só existiam como log estruturado (`structlog`), nunca consultáveis pela
+  API. Kill switch e drawdown não duplicam o evento: já persistem seu próprio motivo desde as
+  histórias 18/29.
+- Frontend: `EquityCurveChart.tsx` removido (reconstruía o histórico de equity de trás para
+  frente a partir do PnL fechado — correto só enquanto nenhuma posição fica aberta entre o início
+  da série e o F5, premissa que não se sustenta). Dois componentes novos na Visão geral:
+  `OpenPositionsCard` (consome `GET /trades/`, posições ao vivo do broker — endpoint já existia
+  em `lib/api.ts` mas nunca era chamado pelo frontend) e `BlockReasonCard` (deriva "por que a
+  última ordem foi bloqueada" do audit log já carregado via `lib/blockReason.ts`, sem endpoint
+  novo). `page.tsx` passou a buscar `getOpenPositions()` e repassar `auditEntries`/
+  `openPositions` para `OverviewTab`.
+- Arquivos alterados: `backend/models/enums.py`, `backend/migrations/versions/
+  9b1c6e2a7f3d_add_order_blocked_audit_event.py` (novo), `backend/execution/runner.py`,
+  `backend/tests/test_runner.py` (asserções novas nos testes de atr_invalido, cooldown,
+  confiança insuficiente, stop_invalido; teste novo de margem insuficiente; `FakeTerminal` ganhou
+  `margin_free` distinto de `equity`), `frontend/src/lib/blockReason.ts` (novo),
+  `frontend/src/components/{OpenPositionsCard,BlockReasonCard}.tsx` (novos),
+  `frontend/src/components/tabs/OverviewTab.tsx`, `frontend/src/app/page.tsx`,
+  `frontend/src/components/charts/EquityCurveChart.tsx` (removido).
+- **Aprendizados para as próximas iterações:**
+  - Ver os três padrões/gotchas novos no topo do arquivo (AGENTS.md → Gotchas): o helper único de
+    bloqueio, o gate de tamanho que colapsa dois motivos distintos no mesmo rótulo, e o achado
+    real de posições abertas divergindo entre banco e broker.
+  - Verificação visual rodando localmente contra a conta demo real (login ativo, equity ~US$
+    100.566, bot já operando havia algum tempo) confirmou o comportamento pretendido: o card de
+    bloqueio mostrou "Nenhum bloqueio — a última ordem foi executada" (o evento `order_placed`
+    mais recente do audit log), e o card de posições abertas mostrou "Nenhuma posição aberta no
+    broker" enquanto a aba Trades ainda listava 5 trades com status "Aberto" no banco — a
+    divergência que a história pedia para expor, capturada ao vivo, não simulada.
+  - `curl` sem `-L` mostra um 308 redirect (`/api/audit/?limit=5` → `/api/audit?limit=5`) no rewrite
+    do Next.js para rotas com barra final antes da query string; o navegador (e `fetch`) segue o
+    redirect sozinho, então não é regressão — só engana quem testa via `curl` direto sem seguir
+    redirect.
+  - Reaproveitar o audit log como fonte de "estado atual" (em vez de um endpoint dedicado) só
+    funciona porque nenhum evento não relacionado a bloqueio é gravado enquanto o bloqueio
+    permanece ativo (kill switch e drawdown retornam antes de processar qualquer símbolo). Se um
+    evento futuro passar a ser gravado durante um ciclo bloqueado, `lib/blockReason.ts` precisa
+    ser revisto — o filtro assume que o evento de bloqueio continua sendo o mais recente do
+    conjunto relevante até o reset.
+---

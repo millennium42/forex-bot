@@ -439,7 +439,7 @@
         "remover abas/graficos que nao tem dado real por tras",
         "tsc --noEmit e eslint limpos"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 37,
