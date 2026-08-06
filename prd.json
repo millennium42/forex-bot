@@ -549,6 +549,35 @@
         "teste: no teto bloqueia; abaixo permite; posicao externa conta"
       ],
       "passes": false
+    },
+    {
+      "id": 45,
+      "title": "Perda e ganho como valor monetario fixo",
+      "description": "A pedido do operador, SL e TP deixam de ser derivados de multiplicadores de ATR e passam a ser alvos MONETARIOS: perder no maximo MAX_LOSS_PER_TRADE_USD=100 e ganhar TAKE_PROFIT_USD=33.33 (100/3). O ATR continua definindo a DISTANCIA relativa, mas o volume e calibrado para que essa distancia valha exatamente o valor monetario alvo. RR resultante = 0.333, que implica 75% de win rate para breakeven - menos exigente que os 83,3% do RR 0.2 anterior.",
+      "acceptanceCriteria": [
+        "MAX_LOSS_PER_TRADE_USD default 100 e TAKE_PROFIT_USD default 33.33, configuraveis",
+        "distancia do SL continua vindo do ATR; o volume e que ajusta o valor monetario",
+        "TP posicionado para valer exatamente TAKE_PROFIT_USD ao volume calculado",
+        "docstring registra o win rate de breakeven implicado pelo par de valores",
+        "se o volume necessario exceder o teto por ordem, a perda real fica ABAIXO de 100 - nunca acima; documentar que o teto de volume tem precedencia",
+        "teste: perda no SL e ganho no TP batem com os valores configurados dentro de 5%"
+      ],
+      "passes": false
+    },
+    {
+      "id": 46,
+      "title": "Volume proporcional ao montante e a confianca",
+      "description": "O volume deixa de ser fixo no teto e passa a ser derivado de tres coisas: quanto a conta tem, quantos trades simultaneos ela suporta, e quao confiante esta o sinal. Objetivo do operador: crescer o lucro percentualmente por dia sem descarregar a carga toda no primeiro trade.",
+      "acceptanceCriteria": [
+        "calcula o TETO DA CONTA: risco total simultaneo que o equity suporta (ACCOUNT_RISK_BUDGET_PCT do equity, default 12%)",
+        "divide esse teto por MAX_OPEN_POSITIONS (12) para achar o risco por slot",
+        "o risco do slot e modulado pela confianca do sinal: confianca baixa usa fracao do slot, confianca alta usa o slot inteiro - nunca mais que o slot",
+        "MIN_CONFIDENCE_VOLUME_FACTOR define o piso da modulacao (default 0.3), para que sinal fraco ainda opere com tamanho reduzido em vez de nao operar",
+        "volume final = risco_do_slot_modulado / (distancia_sl * contract_size), arredondado para baixo no passo do broker",
+        "o volume cresce quando o equity cresce: 12 trades sempre cabem no orcamento",
+        "teste: equity 2x gera volume 2x; confianca 2x gera volume proporcionalmente maior dentro do slot; 12 posicoes simultaneas somadas nao passam do orcamento da conta"
+      ],
+      "passes": false
     }
   ]
 }

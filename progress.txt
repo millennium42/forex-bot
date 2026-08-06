@@ -811,3 +811,4 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     conjunto relevante até o reset.
 ---
 Nenhuma historia concluida na iteracao 5. Parando para inspecao.
+Nenhuma historia concluida na iteracao 1. Parando para inspecao.
