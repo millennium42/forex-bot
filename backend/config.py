@@ -125,7 +125,20 @@ class Settings(BaseSettings):
     twitter_bearer_token: str | None = None
     twitter_cashtags: str = ""
 
+    # --- Operação -----------------------------------------------------------
+    # Pares em que o cálculo de risco é correto: os únicos com USD como moeda de
+    # cotação, igual à moeda da conta. Nos outros 122 pares que o broker oferece,
+    # `risco = distância_sl * volume * contract_size` sai na moeda de cotação e
+    # é comparado com um teto na moeda da conta, sem conversão — o número
+    # comparado não é risco real. Não amplie esta lista sem converter a moeda.
+    trading_symbols: str = "EURUSD,GBPUSD,AUDUSD,NZDUSD"
+    cycle_interval_seconds: int = Field(default=33, gt=0)
+
     # --- NLP ----------------------------------------------------------------
+    # Desligado por decisão do operador: a decisão passa a ser puramente técnica.
+    # Consequência conhecida: `fuse_signals` degrada a confiança quando falta uma
+    # ponta, então o teto de confiança volta a ser o peso técnico (0,7).
+    sentiment_enabled: bool = False
     sentiment_model: str = "ProsusAI/finbert"
     sentiment_cache_ttl_seconds: int = 86_400
     sentiment_lookback_minutes: int = Field(default=60, gt=0)
@@ -182,6 +195,11 @@ class Settings(BaseSettings):
     @property
     def rss_feed_list(self) -> list[str]:
         return [f.strip() for f in self.news_rss_feeds.split(",") if f.strip()]
+
+    @property
+    def symbol_list(self) -> list[str]:
+        """Pares que o bot opera. Ver o comentário em `trading_symbols`."""
+        return [s.strip().upper() for s in self.trading_symbols.split(",") if s.strip()]
 
     @property
     def cashtag_list(self) -> list[str]:

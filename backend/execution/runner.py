@@ -276,7 +276,14 @@ class BotRunner:
         documento ou backend de NLP indisponível resultam em `None`, nunca em
         score neutro forjado — o `fuse_signals` já sabe degradar a confiança
         quando o sentimento é `None`.
+
+        Desligado (`SENTIMENT_ENABLED=false`), nem consulta documento nem
+        carrega o analisador: a decisão fica puramente técnica e o `Signal`
+        grava sentimento nulo, não zero forjado.
         """
+        if not self.settings.sentiment_enabled:
+            return None
+
         desde = datetime.now(UTC) - timedelta(minutes=self.settings.sentiment_lookback_minutes)
         documentos = recent_documents(session, symbol, desde)
         if not documentos:

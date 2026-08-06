@@ -810,3 +810,4 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     ser revisto — o filtro assume que o evento de bloqueio continua sendo o mais recente do
     conjunto relevante até o reset.
 ---
+Nenhuma historia concluida na iteracao 5. Parando para inspecao.
