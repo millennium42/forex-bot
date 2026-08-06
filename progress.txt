@@ -730,3 +730,36 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     (só o INSERT sem valor explícito cai no default do banco) — útil para simular um sinal "antigo"
     sem precisar mockar `datetime.now()` do módulo inteiro.
 ---
+
+## [2026-08-06] — História 35: Alpha factors clássicos no technical analyzer
+- Adicionados 4 alpha factors ao `technical_analyzer`: `momentum` (média multi-janela de
+  5/10/20 candles, normalizada por ATR), `mean_reversion` (z-score do preço contra SMA de 10
+  candles, invertido), `relative_volatility` (expansão do ATR frente à própria média móvel de 20
+  candles, direcionada pelo lado do preço em relação à SMA curta) e `trend_strength` (ADX pondera
+  a direção dada por +DI/-DI, via `ta.trend.ADXIndicator`). Todos entram em `components` na mesma
+  média que já tinha `rsi`/`macd`/`bollinger` — sem peso próprio, sem dependência nova.
+- Arquivos alterados: `backend/analysis/technical_analyzer.py` (série crua nova em
+  `IndicatorSnapshot`, calculada via `pandas`/`ta` dentro de `compute_indicators`; 4 funções
+  `_score_*` novas; `_components` agora devolve 7 chaves), `backend/tests/test_technical_analyzer.py`
+  (fixture `expanding_trend` para testar `relative_volatility`, testes unitários por fator e
+  testes de integração alta/baixa/lateral), `backend/tests/test_runner.py` (3 testes recalibrados,
+  ver aprendizado abaixo).
+- **Aprendizados para as próximas iterações:**
+  - Nenhuma mudança foi necessária em `runner.py`/`signal_fusion.py`: `signal.inputs.
+    technical_components` já grava o dict `components` inteiro (história 24), então os 4 fatores
+    novos entram na auditoria de graça — a AC "signal.inputs passa a registrar todos os fatores"
+    saiu de graça do desenho existente.
+  - Campo novo em `IndicatorSnapshot` (dataclass `frozen=True, slots=True`) ganhou `default=0.0`
+    para não quebrar as duas construções manuais em `test_runner_sentimento.py` que não citam os
+    campos novos — `compute_indicators` real sempre preenche todos explicitamente, nunca depende
+    do default.
+  - Ver o gotcha novo no topo (AGENTS.md → Gotchas): adicionar componente à média do
+    `technical_analyzer` muda a confiança da fusão de fixtures já calibradas em outro módulo,
+    mesmo sem tocar nele. Quebrou 3 testes em `test_runner.py` (rampa reta de preço = fatores de
+    tendência e de reversão brigando por natureza, confiança cai abaixo do limiar de história 27);
+    corrigido com `_runner(min_signal_confidence=0.01)`, já documentado no comentário dos testes.
+  - Janela de todo fator novo (momentum até 20, reversão 10, volatilidade 20, ADX 14) ficou menor
+    que `MACD_SLOW + MACD_SIGNAL` (35), que segue sendo o requisito mais exigente de
+    `minimum_candles()` — não precisou mexer nessa constante nem em nenhum teste que a usa
+    (`test_backtester.py`, `test_serie_curta_nao_produz_indicador`).
+---

@@ -763,9 +763,13 @@ def test_process_symbol_com_sinal_direcional_executa_ordem(session: Session) -> 
     # Amplitude pequena o bastante para o risco monetário (ATR-based) caber no
     # limite de 1% do equity; a direção em si (compra ou venda) não importa
     # aqui — o que se testa é que _process_symbol chega até _executar.
+    # min_signal_confidence baixo porque, numa rampa reta, os fatores de
+    # reversão (rsi/bollinger/mean_reversion) e os de tendência
+    # (momentum/trend_strength) brigam entre si por natureza — a confiança
+    # da fusão fica baixa mesmo com sinal direcional claro (história 35).
     candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
     client = _client(FakeTerminal(candle_rows=candles))
-    runner = _runner()
+    runner = _runner(min_signal_confidence=0.01)
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
 
     runner._process_symbol("EURUSD", client, session, order_manager)
@@ -780,7 +784,7 @@ def test_process_symbol_com_sinal_direcional_executa_ordem(session: Session) -> 
 def test_process_symbol_grava_signal_antes_da_ordem_e_liga_trade(session: Session) -> None:
     candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
     client = _client(FakeTerminal(candle_rows=candles))
-    runner = _runner()
+    runner = _runner(min_signal_confidence=0.01)
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
 
     runner._process_symbol("EURUSD", client, session, order_manager)
@@ -869,7 +873,7 @@ def test_process_symbol_confianca_acima_do_limiar_executa(
 def test_outcome_de_trade_com_signal_tem_predicted_direction(session: Session) -> None:
     candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
     client = _client(FakeTerminal(candle_rows=candles))
-    runner = _runner()
+    runner = _runner(min_signal_confidence=0.01)
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
 
     runner._process_symbol("EURUSD", client, session, order_manager)

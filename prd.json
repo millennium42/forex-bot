@@ -425,7 +425,7 @@
         "teste com series fixtures deterministicas por fator (alta, baixa, lateral)",
         "signal.inputs passa a registrar todos os fatores para auditoria posterior"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 36,

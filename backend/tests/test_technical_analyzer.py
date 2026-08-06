@@ -18,6 +18,10 @@ from backend.analysis.technical_analyzer import (
     TechnicalScore,
     _confidence,
     _score_macd,
+    _score_momentum,
+    _score_relative_volatility,
+    _score_reversion,
+    _score_trend_strength,
     compute_indicators,
     minimum_candles,
     neutral,
@@ -50,6 +54,25 @@ def flat(n: int = CANDLES) -> pd.DataFrame:
     return build_frame([100.0] * n)
 
 
+def expanding_trend(sinal: float, n: int = CANDLES) -> pd.DataFrame:
+    """Alta/baixa com volatilidade em expansão: amplitude cresce a cada candle.
+
+    Exercita `relative_volatility`, que precisa de ATR subindo em relação à
+    própria média — o `uptrend`/`downtrend` de amplitude fixa não move esse
+    fator (fica em ~0), então precisa de uma fixture dedicada.
+    """
+    closes = [100.0 + sinal * i * 0.5 for i in range(n)]
+    amplitudes = [0.1 + i * 0.05 for i in range(n)]
+    return pd.DataFrame(
+        {
+            "open": [c - a / 2 for c, a in zip(closes, amplitudes, strict=True)],
+            "high": [c + a for c, a in zip(closes, amplitudes, strict=True)],
+            "low": [c - a for c, a in zip(closes, amplitudes, strict=True)],
+            "close": closes,
+        }
+    )
+
+
 BASE_SNAPSHOT = IndicatorSnapshot(
     close=100.0,
     rsi=50.0,
@@ -60,6 +83,15 @@ BASE_SNAPSHOT = IndicatorSnapshot(
     bb_low=98.0,
     bb_pct=0.5,
     atr=1.0,
+    momentum_5=0.0,
+    momentum_10=0.0,
+    momentum_20=0.0,
+    reversion_mean=100.0,
+    reversion_std=1.0,
+    atr_baseline=1.0,
+    adx=0.0,
+    adx_pos=0.0,
+    adx_neg=0.0,
 )
 
 
@@ -107,6 +139,109 @@ def test_baixa_sustentada_e_o_espelho_da_alta() -> None:
     assert componentes["macd"] < 0
     assert componentes["rsi"] > 0
     assert componentes["bollinger"] > 0
+
+
+# --------------------------------------------------------------------------- #
+# Alpha factors (história 35)
+# --------------------------------------------------------------------------- #
+def test_componentes_incluem_os_quatro_alpha_factors() -> None:
+    componentes = TechnicalAnalyzer().analyze(uptrend()).components
+    assert set(componentes) == {
+        "rsi",
+        "macd",
+        "bollinger",
+        "momentum",
+        "mean_reversion",
+        "relative_volatility",
+        "trend_strength",
+    }
+
+
+def test_alpha_factors_alta_sustentada() -> None:
+    """Alta linear: momento positivo, esticado (reversão vende), tendência forte."""
+    componentes = TechnicalAnalyzer().analyze(uptrend()).components
+    assert componentes["momentum"] > 0
+    assert componentes["mean_reversion"] < 0
+    assert componentes["trend_strength"] > 0
+
+
+def test_alpha_factors_baixa_e_o_espelho_da_alta() -> None:
+    componentes = TechnicalAnalyzer().analyze(downtrend()).components
+    assert componentes["momentum"] < 0
+    assert componentes["mean_reversion"] > 0
+    assert componentes["trend_strength"] < 0
+
+
+def test_lateral_nao_produz_fator_forjado() -> None:
+    """Série sem variação (RSI indefinido) já vira `neutral()` — vale para todo
+    fator novo também, porque todos passam pelo mesmo laço de checagem de NaN.
+    """
+    assert compute_indicators(flat()) is None
+    resultado = TechnicalAnalyzer().analyze(flat())
+    assert resultado == neutral()
+    assert resultado.components == {}
+
+
+def test_volatilidade_relativa_precisa_de_amplitude_em_expansao() -> None:
+    """Alta/baixa com amplitude fixa (uptrend/downtrend) não move o fator."""
+    componentes = TechnicalAnalyzer().analyze(uptrend()).components
+    assert componentes["relative_volatility"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_volatilidade_relativa_expande_na_direcao_do_preco() -> None:
+    alta = TechnicalAnalyzer().analyze(expanding_trend(sinal=1.0)).components
+    baixa = TechnicalAnalyzer().analyze(expanding_trend(sinal=-1.0)).components
+    assert alta["relative_volatility"] > 0
+    assert baixa["relative_volatility"] < 0
+    assert alta["relative_volatility"] == pytest.approx(-baixa["relative_volatility"])
+
+
+def test_momentum_multi_janela_direcao_e_simetria() -> None:
+    positivo = _score_momentum(snapshot(momentum_5=1.0, momentum_10=2.0, momentum_20=4.0, atr=1.0))
+    negativo = _score_momentum(
+        snapshot(momentum_5=-1.0, momentum_10=-2.0, momentum_20=-4.0, atr=1.0)
+    )
+    assert positivo > 0
+    assert negativo < 0
+    assert positivo == pytest.approx(-negativo)
+
+
+def test_momentum_sem_atr_nao_inventa_escala() -> None:
+    valor = _score_momentum(snapshot(momentum_5=5.0, momentum_10=5.0, momentum_20=5.0, atr=0.0))
+    assert valor == 0.0
+
+
+def test_reversao_extremo_acima_da_media_puxa_para_venda() -> None:
+    venda = _score_reversion(snapshot(close=110.0, reversion_mean=100.0, reversion_std=5.0))
+    compra = _score_reversion(snapshot(close=90.0, reversion_mean=100.0, reversion_std=5.0))
+    assert venda < 0
+    assert compra > 0
+    assert venda == pytest.approx(-compra)
+
+
+def test_reversao_sem_desvio_nao_inventa_escala() -> None:
+    assert _score_reversion(snapshot(reversion_std=0.0)) == 0.0
+
+
+def test_relative_volatility_sem_baseline_nao_inventa_escala() -> None:
+    assert _score_relative_volatility(snapshot(atr_baseline=0.0)) == 0.0
+
+
+def test_relative_volatility_no_preco_da_media_fica_neutro() -> None:
+    """Sem direção (preço exatamente na média), não há lado para a expansão puxar."""
+    assert _score_relative_volatility(snapshot(close=100.0, reversion_mean=100.0)) == 0.0
+
+
+def test_forca_de_tendencia_segue_o_di_dominante() -> None:
+    compra = _score_trend_strength(snapshot(adx=40.0, adx_pos=30.0, adx_neg=10.0))
+    venda = _score_trend_strength(snapshot(adx=40.0, adx_pos=10.0, adx_neg=30.0))
+    assert compra > 0
+    assert venda < 0
+    assert compra == pytest.approx(-venda)
+
+
+def test_forca_de_tendencia_sem_di_nao_inventa_escala() -> None:
+    assert _score_trend_strength(snapshot(adx_pos=0.0, adx_neg=0.0)) == 0.0
 
 
 def test_alta_e_baixa_produzem_scores_simetricos() -> None:

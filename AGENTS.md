@@ -42,6 +42,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 32 — Perfil agressivo: margem do broker como único teto de tamanho | ✅ |
 | 33 — Stop e alvo do perfil agressivo | ✅ |
 | 34 — Múltiplas posições por símbolo com leitura distinta | ✅ |
+| 35 — Alpha factors clássicos no technical analyzer | ✅ |
 
 ---
 
@@ -241,6 +242,29 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   `momento if momento.tzinfo is not None else momento.replace(tzinfo=UTC)` (ou chame o helper já
   existente) sempre que uma coluna `TimestampTZ` lida do banco for usada em aritmética de data em
   Python, não só em filtro `WHERE` (que não sofre o problema, porque a comparação roda no SQL).
+- **Adicionar componente novo ao `technical_analyzer` muda a confiança da fusão de fixtures de
+  teste já calibradas em outros módulos, mesmo sem tocar neles.** A história 35 acrescentou 4
+  alpha factors (`momentum`, `mean_reversion`, `relative_volatility`, `trend_strength`) à mesma
+  média que já tinha `rsi`/`macd`/`bollinger`. Numa rampa reta de preço, os fatores de reversão
+  (rsi/bollinger/mean_reversion) sempre discordam dos de tendência (momentum/trend_strength) — é
+  o comportamento correto (reversão prevê puxada, tendência prevê continuação), mas derruba a
+  concordância e, por consequência, a confiança da fusão. Três testes em `test_runner.py`
+  calibrados na história 24 (fixture de rampa reta com `min_signal_confidence` default) ficaram
+  abaixo do limiar e pararam de gerar ordem; corrigido com override
+  `_runner(min_signal_confidence=0.01)`, já que o próprio teste documenta que a direção/confiança
+  exata não importa, só que `_process_symbol` chega até `_executar`. Mesmo padrão da história 33
+  (mudar constante interna quebra teste que fixa valor numérico calibrado alhures) — ao adicionar
+  componente novo à média do `technical_analyzer`, procure teste de outro módulo que dependa do
+  valor concreto de confiança/score resultante, não só do sinal (BUY/SELL/HOLD).
+- **Fator alpha novo em `IndicatorSnapshot`: raw no snapshot, normalização no `_score_*`.** Mesmo
+  padrão do MACD/ATR: o snapshot guarda o valor cru (`momentum_5`, `reversion_mean`,
+  `atr_baseline`, `adx_pos`...) calculado via `close.diff()`/`.rolling()`/`ADXIndicator` da lib
+  `ta`; a função `_score_*` faz a divisão que dá a escala (por ATR, por desvio-padrão, por soma de
+  DI) e devolve 0.0 quando o denominador é ≤0 — nunca um valor forjado. Como o campo cru entra na
+  mesma lista `valores` que os indicadores antigos dentro de `compute_indicators`, ele herda de
+  graça a checagem de NaN (série curta ou em aquecimento já devolve `None` sem código extra),
+  desde que a janela do fator novo seja menor que `minimum_candles()` (35, imposto pelo MACD) —
+  janelas de até ~20-33 candles não exigem mexer nessa constante.
 
 ---
 
