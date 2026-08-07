@@ -408,22 +408,27 @@ def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
 
 
 def test_executar_volume_nunca_excede_o_teto_por_ordem(session: Session) -> None:
-    """História 32: perfil agressivo — VOLUME_MAX_POR_ORDEM é o teto duro de tamanho.
+    """História 46: volume máx dinâmico por confiança.
 
-    ATR pequeno faz o risco calculado (história 45) pedir mais que o teto fixo
-    de lotes; o volume final tem que ficar preso no teto, nunca no valor bruto.
+    ATR pequeno faz o risco calculado pedir mais que o teto dinâmico de lotes;
+    o volume final tem que ficar preso no teto, nunca no valor bruto.
     """
     runner = _runner()
     client = _client()
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
+    # BUY_SIGNAL tem confidence=0.8 (80%), teto dinâmico ~5.2 lotes
     # ATR = 0.0004 faz volume bruto = (100k * 0.1 / 100) / (0.0004 * 100k) = 2.5 lotes
+    # 2.5 < 5.2, então não há limite
     atr = 0.0004
     runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
 
     trade = session.execute(select(Trade)).scalars().one()
-    assert trade.volume == pytest.approx(runner.settings.volume_max_per_order_lots)
+    # Teto dinâmico para confidence 80% é ~5.2, risco pede 2.5 → executado
+    teto_dinamico = runner._volume_max_por_confianca(BUY_SIGNAL.confidence * 100)
+    volume_esperado = min(2.5, teto_dinamico)
+    assert trade.volume == pytest.approx(volume_esperado)
 
 
 def _instrumento_padrao(**overrides: object) -> Instrument:

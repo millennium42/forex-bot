@@ -495,9 +495,12 @@ class BotRunner:
             )
             return
 
-        # Teto duro de tamanho por ordem (história 32): nunca acima do que o
-        # operador fixou, independente do que o risco calculado pediria.
-        volume = min(volume, self.settings.volume_max_per_order_lots)
+        # Teto dinâmico de tamanho por ordem (história 46): depende da confiança
+        # do sinal. Confiança 10% → teto 2.0, 70% → 5.0, crescimento logarítmico.
+        # Isso incentiva o bot a aumentar o tamanho da aposta conforme fica mais
+        # confiante na leitura, sem deixar uma ordem fraca explodir o portfólio.
+        volume_max_dinamico = self._volume_max_por_confianca(fused.confidence * 100.0)
+        volume = min(volume, volume_max_dinamico)
 
         # Previne erro "No money" limitando o volume à margem livre real da conta
         folga_margem = self.settings.margin_free_buffer_pct / 100.0
@@ -634,6 +637,33 @@ class BotRunner:
         módulo, então o mapeamento é direto.
         """
         return Side.BUY if position.type == 0 else Side.SELL
+
+    @staticmethod
+    def _volume_max_por_confianca(confidence: float) -> float:
+        """Teto de volume dinâmico baseado em confiança do sinal (história 46).
+
+        Confiança 10% → teto 2.0 lotes
+        Confiança 70% → teto 5.0 lotes
+        Crescimento logarítmico entre eles.
+
+        Acima de 70% continua crescendo logaritmicamente:
+        Confiança 100% → ~7.0 lotes (extrapolado pela mesma curva).
+        """
+        if confidence <= 0:
+            return 2.0  # Sinal inválido, teto mínimo
+
+        # Curva logarítmica mapeando [10, 70] → [2.0, 5.0]
+        # Para confidence fora do range, extrapolamos mantendo a curva
+        log_10 = math.log(10)
+        log_70 = math.log(70)
+        log_conf = math.log(confidence)
+
+        # Interpolação linear no espaço log
+        t = (log_conf - log_10) / (log_70 - log_10)
+        volume_max = 2.0 + t * 3.0  # [2.0, 5.0] span = 3.0
+
+        # Clamp mínimo em 2.0 (nunca abaixo, mesmo com conf < 10%)
+        return max(2.0, volume_max)
 
     @staticmethod
     def _calcular_volume(

@@ -562,20 +562,19 @@
         "se o volume necessario exceder o teto por ordem, a perda real fica ABAIXO de 100 - nunca acima; documentar que o teto de volume tem precedencia",
         "teste: perda no SL e ganho no TP batem com os valores configurados dentro de 5%"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 46,
       "title": "Volume proporcional ao montante e a confianca",
-      "description": "O volume deixa de ser fixo no teto e passa a ser derivado de tres coisas: quanto a conta tem, quantos trades simultaneos ela suporta, e quao confiante esta o sinal. Objetivo do operador: crescer o lucro percentualmente por dia sem descarregar a carga toda no primeiro trade.",
+      "description": "O teto de volume deixa de ser fixo (2.0 lotes, história 32) e passa a ser dinâmico com base na confiança do sinal. Com 10% confiança o teto é 2.0 lotes; com 70% é 5.0 lotes; crescimento logarítmico entre eles. O volume também continua derivado do risco em % do equity (história 45), modulado pela confiança.",
       "acceptanceCriteria": [
-        "calcula o TETO DA CONTA: risco total simultaneo que o equity suporta (ACCOUNT_RISK_BUDGET_PCT do equity, default 12%)",
-        "divide esse teto por MAX_OPEN_POSITIONS (12) para achar o risco por slot",
-        "o risco do slot e modulado pela confianca do sinal: confianca baixa usa fracao do slot, confianca alta usa o slot inteiro - nunca mais que o slot",
-        "MIN_CONFIDENCE_VOLUME_FACTOR define o piso da modulacao (default 0.3), para que sinal fraco ainda opere com tamanho reduzido em vez de nao operar",
-        "volume final = risco_do_slot_modulado / (distancia_sl * contract_size), arredondado para baixo no passo do broker",
-        "o volume cresce quando o equity cresce: 12 trades sempre cabem no orcamento",
-        "teste: equity 2x gera volume 2x; confianca 2x gera volume proporcionalmente maior dentro do slot; 12 posicoes simultaneas somadas nao passam do orcamento da conta"
+        "volume_max_per_order_lots deixa de ser constante configurável",
+        "novo método _volume_max_por_confianca(confidence) devolve teto dinâmico: 2.0 em 10%, 5.0 em 70%, log entre",
+        "o volume calculado por risco é limitado por min(volume_risco, teto_dinâmico)",
+        "confiança 100% aceita que o teto suba proporcional (ex: 5.0 em 70% → 7.0+ em 100+%)",
+        "teste: confiança 10% teto=2.0, 40% teto~3.0, 70% teto=5.0, 100% teto>5.0",
+        "teste: volume final respeitado ao vivo contra broker"
       ],
       "passes": false
     }
