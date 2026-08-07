@@ -56,6 +56,7 @@ __all__ = [
     "BBRSI_RSI_LEN",
     "BBRSI_SL_COEF",
     "BBRSI_TP_COEF",
+    "BBRSI_VOLUME_MAX_LOTS",
     "STRATEGY_DIRECTION_THRESHOLD",
     "STRATEGY_REGISTRY",
     "THREE_MACD_BUFF_SIZE",
@@ -67,6 +68,7 @@ __all__ = [
     "THREE_MACD_M3_SLOW",
     "THREE_MACD_RISK_PCT",
     "THREE_MACD_TP_COEF",
+    "THREE_MACD_VOLUME_MAX_LOTS",
     "TWO_MACD_STO_D_PERIOD",
     "TWO_MACD_STO_K_PERIOD",
     "TWO_MACD_STO_M1_FAST",
@@ -76,6 +78,7 @@ __all__ = [
     "TWO_MACD_STO_RISK_PCT",
     "TWO_MACD_STO_SLOWING",
     "TWO_MACD_STO_TP_COEF",
+    "TWO_MACD_STO_VOLUME_MAX_LOTS",
     "BBRSIStrategy",
     "Strategy",
     "StrategySignal",
@@ -141,6 +144,7 @@ class StrategySignal:
     stop_loss: float | None = None
     take_profit_rr: float | None = None
     risk_pct: float | None = None
+    volume_max_lots: float | None = None
 
 
 class Strategy(Protocol):
@@ -194,6 +198,9 @@ BBRSI_SL_COEF = 0.9
 BBRSI_TP_COEF = 1.0
 # `Risk = 1.0` na fonte -> 1% do equity por trade (`ea.risk = Risk * 0.01`).
 BBRSI_RISK_PCT = 1.0
+# Teto de lotes por ordem, proporcional ao `Risk` da fonte (2x). Ver o bloco de
+# TETO POR ESTRATEGIA em `THREE_MACD_VOLUME_MAX_LOTS`.
+BBRSI_VOLUME_MAX_LOTS = 2.0
 _BBRSI_RSI_LOWER = 30.0
 _BBRSI_RSI_MIDDLE = 50.0
 _BBRSI_RSI_UPPER = 70.0
@@ -221,6 +228,7 @@ class BBRSIStrategy:
         sl_coef: float = BBRSI_SL_COEF,
         tp_coef: float = BBRSI_TP_COEF,
         risk_pct: float = BBRSI_RISK_PCT,
+        volume_max_lots: float = BBRSI_VOLUME_MAX_LOTS,
     ) -> None:
         self._bb_len = bb_len
         self._bb_dev = bb_dev
@@ -228,6 +236,7 @@ class BBRSIStrategy:
         self._sl_coef = sl_coef
         self._tp_coef = tp_coef
         self._risk_pct = risk_pct
+        self._volume_max_lots = volume_max_lots
 
     def evaluate(self, candles: pd.DataFrame) -> StrategySignal | None:
         close = candles["close"].astype(float)
@@ -290,6 +299,7 @@ class BBRSIStrategy:
                 stop_loss=stop_loss,
                 take_profit_rr=self._tp_coef,
                 risk_pct=self._risk_pct,
+                volume_max_lots=self._volume_max_lots,
             )
 
         venda = (
@@ -310,6 +320,7 @@ class BBRSIStrategy:
                 stop_loss=stop_loss,
                 take_profit_rr=self._tp_coef,
                 risk_pct=self._risk_pct,
+                volume_max_lots=self._volume_max_lots,
             )
 
         return StrategySignal(
@@ -348,6 +359,18 @@ THREE_MACD_TP_COEF = 2.0
 # hoje são `MAX_OPEN_POSITIONS`, a margem livre do broker e o teto de lotes
 # por ordem. Reduza estes percentuais se aumentar o número de slots.
 THREE_MACD_RISK_PCT = 0.5
+# TETO POR ESTRATEGIA: com stop de ~1,5 pip (ATR da sessao asiatica), 2,25% de
+# risco pede 151 lotes e 0,1% pede 5,8 - em TODOS os casos o teto de volume
+# binda primeiro, entao e ELE, nao o `risk_pct`, que decide o tamanho real.
+# Medido em producao: 2macdsto abriu 5,0 lotes (risco real US) enquanto o
+# risco configurado pediria US.250.
+#
+# Enquanto o teto vinha da confianca do sinal, estrategia binaria (confianca
+# sempre 1.0 -> 0.7 fundida -> 70%) pegava sempre o maximo da curva, e a de
+# score continuo (confianca ~0,09) pegava o minimo: o maior tamanho ia para a
+# de pior expectancia observada. Derivar o teto do `Risk` da fonte restaura a
+# hierarquia do autor num ponto que efetivamente binda.
+THREE_MACD_VOLUME_MAX_LOTS = 1.0
 
 
 def _macd_series(close: pd.Series, fast: int, slow: int, buff_size: int) -> list[float]:
@@ -510,6 +533,7 @@ class ThreeMacdStrategy:
         buff_size: int = THREE_MACD_BUFF_SIZE,
         tp_coef: float = THREE_MACD_TP_COEF,
         risk_pct: float = THREE_MACD_RISK_PCT,
+        volume_max_lots: float = THREE_MACD_VOLUME_MAX_LOTS,
     ) -> None:
         self._m1_fast = m1_fast
         self._m1_slow = m1_slow
@@ -520,6 +544,7 @@ class ThreeMacdStrategy:
         self._buff_size = buff_size
         self._tp_coef = tp_coef
         self._risk_pct = risk_pct
+        self._volume_max_lots = volume_max_lots
 
     def evaluate(self, candles: pd.DataFrame) -> StrategySignal | None:
         close = candles["close"].astype(float)
@@ -550,6 +575,7 @@ class ThreeMacdStrategy:
                 score=1.0,
                 take_profit_rr=self._tp_coef,
                 risk_pct=self._risk_pct,
+                volume_max_lots=self._volume_max_lots,
             )
         if _three_macd_sell(m1, m2, m3, self._buff_size):
             return StrategySignal(
@@ -559,6 +585,7 @@ class ThreeMacdStrategy:
                 score=-1.0,
                 take_profit_rr=self._tp_coef,
                 risk_pct=self._risk_pct,
+                volume_max_lots=self._volume_max_lots,
             )
         return StrategySignal(
             direction=Direction.HOLD, confidence=0.0, components=componentes, score=0.0
@@ -586,6 +613,9 @@ TWO_MACD_STO_TP_COEF = 1.0
 # o do 3MACD). Ver o AVISO DE AGREGAÇÃO em `THREE_MACD_RISK_PCT`: este é o
 # valor que domina o pior caso quando vários slots abrem ao mesmo tempo.
 TWO_MACD_STO_RISK_PCT = 2.25
+# Teto de lotes por ordem, proporcional ao `Risk` da fonte (2x) - o maior dos
+# tres, mantendo a razao 0,5:1,0:2,25 do autor.
+TWO_MACD_STO_VOLUME_MAX_LOTS = 4.5
 _TWO_MACD_STO_K_LOWER = 20.0
 _TWO_MACD_STO_K_UPPER = 80.0
 
@@ -656,6 +686,7 @@ class TwoMacdStoStrategy:
         sto_d_period: int = TWO_MACD_STO_D_PERIOD,
         tp_coef: float = TWO_MACD_STO_TP_COEF,
         risk_pct: float = TWO_MACD_STO_RISK_PCT,
+        volume_max_lots: float = TWO_MACD_STO_VOLUME_MAX_LOTS,
     ) -> None:
         self._m1_fast = m1_fast
         self._m1_slow = m1_slow
@@ -666,6 +697,7 @@ class TwoMacdStoStrategy:
         self._sto_d_period = sto_d_period
         self._tp_coef = tp_coef
         self._risk_pct = risk_pct
+        self._volume_max_lots = volume_max_lots
 
     def evaluate(self, candles: pd.DataFrame) -> StrategySignal | None:
         high = candles["high"].astype(float)
@@ -711,6 +743,7 @@ class TwoMacdStoStrategy:
                 score=1.0,
                 take_profit_rr=self._tp_coef,
                 risk_pct=self._risk_pct,
+                volume_max_lots=self._volume_max_lots,
             )
         if _two_macd_sto_sell(m1_2, m2_2, k_1, k_2, d_1, d_2):
             return StrategySignal(
@@ -720,6 +753,7 @@ class TwoMacdStoStrategy:
                 score=-1.0,
                 take_profit_rr=self._tp_coef,
                 risk_pct=self._risk_pct,
+                volume_max_lots=self._volume_max_lots,
             )
         return StrategySignal(
             direction=Direction.HOLD, confidence=0.0, components=componentes, score=0.0

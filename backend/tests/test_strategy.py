@@ -20,12 +20,15 @@ import backend.analysis.strategy as strategy_module
 from backend.analysis.strategy import (
     BBRSI_RISK_PCT,
     BBRSI_TP_COEF,
+    BBRSI_VOLUME_MAX_LOTS,
     STRATEGY_DIRECTION_THRESHOLD,
     STRATEGY_REGISTRY,
     THREE_MACD_RISK_PCT,
     THREE_MACD_TP_COEF,
+    THREE_MACD_VOLUME_MAX_LOTS,
     TWO_MACD_STO_RISK_PCT,
     TWO_MACD_STO_TP_COEF,
+    TWO_MACD_STO_VOLUME_MAX_LOTS,
     BBRSIStrategy,
     TechnicalStrategy,
     ThreeMacdStrategy,
@@ -830,3 +833,53 @@ def test_technical_nao_declara_risco_proprio(monkeypatch: pytest.MonkeyPatch) ->
 
     assert resultado is not None
     assert resultado.risk_pct is None
+
+
+# -- Teto de volume por estratégia -------------------------------------------
+#
+# Com o stop derivado do ATR, o volume que o risco pede quase sempre estoura o
+# teto, então é o teto que decide o tamanho real. Medido em produção: 2macdsto
+# abriu 5,0 lotes (risco real US$ 74) enquanto o `risk_pct` de 2,25% pediria
+# US$ 2.250 — 151 lotes. Derivar o teto do `Risk` da fonte é o que faz a
+# hierarquia do autor valer num ponto que efetivamente binda.
+
+
+def test_tetos_de_volume_mantem_a_razao_do_risco_da_fonte() -> None:
+    """O teto é proporcional ao `Risk`: mesma razão 0,5 : 1,0 : 2,25."""
+    assert pytest.approx(1.0) == THREE_MACD_VOLUME_MAX_LOTS
+    assert pytest.approx(2.0) == BBRSI_VOLUME_MAX_LOTS
+    assert pytest.approx(4.5) == TWO_MACD_STO_VOLUME_MAX_LOTS
+
+    fator = BBRSI_VOLUME_MAX_LOTS / BBRSI_RISK_PCT
+    assert pytest.approx(THREE_MACD_RISK_PCT * fator) == THREE_MACD_VOLUME_MAX_LOTS
+    assert pytest.approx(TWO_MACD_STO_RISK_PCT * fator) == TWO_MACD_STO_VOLUME_MAX_LOTS
+
+
+def test_three_macd_declara_teto_de_volume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A de tendência leva o MENOR teto — antes levava o maior, por ser binária."""
+    strategy = ThreeMacdStrategy(buff_size=_BUFF)
+    _patch_macd_series_por_slow(monkeypatch, strategy, _M1_BUY_P1, _M2_BUY_P1, _M3_BUY_P1)
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 200))
+
+    assert resultado is not None
+    assert resultado.volume_max_lots == pytest.approx(THREE_MACD_VOLUME_MAX_LOTS)
+
+
+def test_bbrsi_declara_teto_de_volume() -> None:
+    strategy = BBRSIStrategy(bb_len=20, bb_dev=2.0, rsi_len=3, sl_coef=0.9)
+    resultado = strategy.evaluate(_candles_from_closes(_BUY_CLOSES))
+
+    assert resultado is not None
+    assert resultado.volume_max_lots == pytest.approx(BBRSI_VOLUME_MAX_LOTS)
+
+
+def test_technical_nao_declara_teto_de_volume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`technical` cai na curva por confiança, que só faz sentido em score contínuo."""
+    monkeypatch.setattr(strategy_module, "compute_indicators", _indicadores_validos)
+    fake_score = TechnicalScore(score=0.8, confidence=0.8, components={"rsi": 0.8})
+    strategy = TechnicalStrategy(analyzer=_FakeAnalyzer(fake_score))  # type: ignore[arg-type]
+
+    resultado = strategy.evaluate(_candles(60))
+
+    assert resultado is not None
+    assert resultado.volume_max_lots is None

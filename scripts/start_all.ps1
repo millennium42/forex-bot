@@ -31,6 +31,34 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
+function Invoke-Native {
+    <#
+    .SYNOPSIS
+        Roda um executável nativo sem que stderr vire erro fatal.
+
+    .DESCRIPTION
+        No PowerShell 5.1, um nativo que escreve em stderr com
+        `$ErrorActionPreference = "Stop"` derruba o script inteiro, mesmo
+        retornando 0. `docker compose` faz isso: o `.env` tem
+        `TWITTER_CASHTAGS=$EURUSD,...` e o compose avisa que a variável não
+        existe — ruído inofensivo (nem postgres nem redis usam esse campo),
+        mas fatal sob "Stop". Aqui o preference cai para "Continue" durante a
+        chamada e o sucesso é decidido pelo exit code, que é o sinal correto.
+    #>
+    param([scriptblock]$Bloco)
+
+    $anterior = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Bloco 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { Write-Host "    $($_.Exception.Message)" -ForegroundColor DarkGray }
+            else { Write-Host "    $_" }
+        }
+    } finally {
+        $ErrorActionPreference = $anterior
+    }
+}
+
 function Write-Step {
     param([string]$Msg)
     Write-Host ""
@@ -87,7 +115,7 @@ if (-not $mt5Proc) {
 # -- 2. Docker Compose (Postgres + Redis) --------------------------------
 
 Write-Step "Subindo Postgres e Redis (docker compose up -d)"
-docker compose up -d
+Invoke-Native { docker compose up -d }
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "docker compose up falhou."
     exit 1
@@ -98,11 +126,14 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "    Aguardando Postgres aceitar conexoes..."
 $maxTentativas = 30
 $ok = $false
+$anterior = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 for ($i = 1; $i -le $maxTentativas; $i++) {
     docker compose exec -T postgres pg_isready -U forex *> $null
     if ($LASTEXITCODE -eq 0) { $ok = $true; break }
     Start-Sleep -Seconds 1
 }
+$ErrorActionPreference = $anterior
 if (-not $ok) {
     Write-Fail "Postgres nao respondeu apos $maxTentativas segundos."
     exit 1
@@ -112,7 +143,7 @@ Write-Ok "Postgres pronto"
 # -- 3. Migrations --------------------------------------------------------
 
 Write-Step "Aplicando migrations (alembic upgrade head)"
-uv run alembic upgrade head
+Invoke-Native { uv run alembic upgrade head }
 if ($LASTEXITCODE -ne 0) {
     Write-Fail "alembic upgrade falhou."
     exit 1

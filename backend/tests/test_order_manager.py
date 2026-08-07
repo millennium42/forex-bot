@@ -15,9 +15,15 @@ from backend.models.trade import Trade
 
 
 class FakeTerminal:
-    def __init__(self, retcode: int | None = 10009) -> None:
+    def __init__(self, retcode: int | None = 10009, fill_offset: float = 0.0) -> None:
         self.retcode = retcode
+        # Diferença entre o preço pedido e o preço de preenchimento. O broker
+        # real preenche a mercado, então o fill quase nunca é o preço enviado —
+        # e como SL/TP são níveis absolutos, essa diferença desloca as
+        # distâncias reais (ver `_realinhar_stops_ao_fill`).
+        self.fill_offset = fill_offset
         self.last_order: dict[str, Any] | None = None
+        self.orders: list[dict[str, Any]] = []
         self._action: int | None = None
 
         self.TRADE_ACTION_DEAL = 1
@@ -63,14 +69,17 @@ class FakeTerminal:
     def order_send(self, request: dict[str, Any]) -> Any:
         self._action = request.get("action")
         self.last_order = request
+        self.orders.append(dict(request))
         if self.retcode is None:
             return None
+
+        preco_fill = request.get("price", 1.1) + self.fill_offset
 
         class Result:
             retcode = self.retcode
             order = 123
             deal = 456
-            price = request.get("price", 1.1)
+            price = preco_fill
             volume = request.get("volume", 0.1)
             comment = request.get("comment", "")
 
@@ -258,3 +267,106 @@ def test_close_trade_success(session: Session, order_manager: OrderManager) -> N
 
     log = session.query(AuditLog).filter_by(event_type=AuditEventType.ORDER_CLOSED).first()
     assert log is not None
+
+
+# -- realinhamento de SL/TP ao preço de preenchimento -------------------------
+
+
+def _order_manager_com_fill(
+    session: Session, risk_manager: RiskManager, fill_offset: float
+) -> tuple[OrderManager, FakeTerminal]:
+    terminal = FakeTerminal(fill_offset=fill_offset)
+    client = MT5Client(terminal=terminal, settings=Settings())
+    client._connected = True
+    return OrderManager(client, session, risk_manager), terminal
+
+
+def test_stops_sao_realinhados_quando_o_fill_difere_do_pedido(
+    session: Session, risk_manager: RiskManager
+) -> None:
+    """As DISTÂNCIAS pretendidas são preservadas em volta do preço real.
+
+    Bug observado em produção: 2MACDSTO com RR pretendido 1.0 abriu com 1.27
+    porque o fill veio 0,2 pip melhor. SL/TP são calculados do preço SOLICITADO
+    mas são níveis ABSOLUTOS, então qualquer diferença no fill desloca as
+    distâncias — e com elas o risco monetário real.
+    """
+    instrument = Instrument(symbol="EURUSD", digits=5)
+    session.add(instrument)
+    session.commit()
+
+    order_manager, terminal = _order_manager_com_fill(session, risk_manager, fill_offset=0.01)
+
+    req = OrderRequest(
+        symbol="EURUSD",
+        side=Side.BUY,
+        volume=0.1,
+        price=1.10,
+        stop_loss=1.00,  # distância pretendida: 0.10
+        take_profit=1.20,  # distância pretendida: 0.10
+    )
+    trade = order_manager.place_order(req, "req_fill", instrument.id, 10_000.0, 0.0)
+
+    assert trade is not None
+    assert trade.entry_price == pytest.approx(1.11)
+
+    # A última ordem enviada tem que ser o SLTP com as distâncias recolocadas
+    # em volta do fill — não os níveis originais.
+    ultima = terminal.orders[-1]
+    assert ultima["action"] == terminal.TRADE_ACTION_SLTP
+    assert ultima["sl"] == pytest.approx(1.01)
+    assert ultima["tp"] == pytest.approx(1.21)
+
+
+def test_stops_realinhados_preservam_o_rr_pretendido(
+    session: Session, risk_manager: RiskManager
+) -> None:
+    """O RR medido contra o preço real volta a bater com o configurado."""
+    instrument = Instrument(symbol="EURUSD", digits=5)
+    session.add(instrument)
+    session.commit()
+
+    order_manager, terminal = _order_manager_com_fill(session, risk_manager, fill_offset=-0.02)
+
+    # RR pretendido 2.0: stop a 0.10, alvo a 0.20.
+    req = OrderRequest(
+        symbol="EURUSD",
+        side=Side.SELL,
+        volume=0.1,
+        price=1.10,
+        stop_loss=1.20,
+        take_profit=0.90,
+    )
+    trade = order_manager.place_order(req, "req_rr", instrument.id, 10_000.0, 0.0)
+
+    assert trade is not None
+    fill = trade.entry_price
+    assert fill is not None
+
+    ultima = terminal.orders[-1]
+    d_sl = abs(ultima["sl"] - fill)
+    d_tp = abs(ultima["tp"] - fill)
+    assert d_tp / d_sl == pytest.approx(2.0)
+
+
+def test_fill_igual_ao_pedido_nao_gera_modificacao(
+    session: Session, risk_manager: RiskManager
+) -> None:
+    """Sem diferença no fill não há ida ao broker para reescrever o mesmo número."""
+    instrument = Instrument(symbol="EURUSD", digits=5)
+    session.add(instrument)
+    session.commit()
+
+    order_manager, terminal = _order_manager_com_fill(session, risk_manager, fill_offset=0.0)
+
+    req = OrderRequest(
+        symbol="EURUSD",
+        side=Side.BUY,
+        volume=0.1,
+        price=1.10,
+        stop_loss=1.00,
+        take_profit=1.20,
+    )
+    order_manager.place_order(req, "req_sem_slip", instrument.id, 10_000.0, 0.0)
+
+    assert all(o["action"] != terminal.TRADE_ACTION_SLTP for o in terminal.orders)

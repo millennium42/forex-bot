@@ -29,6 +29,11 @@ from backend.models.trade import Trade
 
 logger = structlog.get_logger(__name__)
 
+# Menor que meio ponto num par de 5 dígitos: abaixo disso o fill saiu no preço
+# pedido e realinhar os stops seria uma ida ao broker para reescrever o mesmo
+# número.
+_TOLERANCIA_PRECO = 1e-6
+
 
 class OrderManager:
     def __init__(
@@ -246,7 +251,66 @@ class OrderManager:
         )
         self.db.add(placed_event)
         self.db.commit()
+
+        self._realinhar_stops_ao_fill(trade, request)
         return trade
+
+    def _realinhar_stops_ao_fill(self, trade: Trade, request: OrderRequest) -> None:
+        """Reposiciona SL/TP a partir do preço de preenchimento real.
+
+        SL e TP são calculados a partir do preço SOLICITADO, mas o broker
+        preenche a mercado e o preço efetivo difere. Como os stops são níveis
+        ABSOLUTOS, qualquer diferença desloca as distâncias reais e, com elas,
+        o risco monetário e o RR.
+
+        Observado em produção: uma venda de 2MACDSTO com RR pretendido 1.0 saiu
+        com 1.27 porque o fill veio 0,2 pip melhor — `d_sl` encolheu e `d_tp`
+        cresceu na mesma medida. Naquele caso foi a favor; um fill pior desloca
+        contra, e aí o risco real fica ACIMA do pretendido, que é o que não pode
+        acontecer.
+
+        Preserva as DISTÂNCIAS pretendidas, recolocando-as em volta do fill.
+        """
+        fill = trade.entry_price
+        if fill is None or request.stop_loss is None:
+            return
+
+        distancia_sl = abs(request.price - request.stop_loss)
+        if distancia_sl <= 0:
+            return
+
+        novo_sl = fill - distancia_sl if trade.side == Side.BUY else fill + distancia_sl
+
+        novo_tp: float | None = None
+        if request.take_profit is not None:
+            distancia_tp = abs(request.take_profit - request.price)
+            novo_tp = fill + distancia_tp if trade.side == Side.BUY else fill - distancia_tp
+
+        # Nada a fazer quando o fill saiu exatamente no preço pedido: evita uma
+        # ida ao broker por ordem só para reescrever os mesmos números.
+        if abs(novo_sl - request.stop_loss) < _TOLERANCIA_PRECO and (
+            novo_tp is None
+            or request.take_profit is None
+            or abs(novo_tp - request.take_profit) < _TOLERANCIA_PRECO
+        ):
+            return
+
+        if novo_sl <= 0:
+            logger.warning("order_manager.realinhamento_stop_invalido", trade_id=trade.id)
+            return
+
+        if self.modify_trade(trade, novo_sl, novo_tp):
+            logger.info(
+                "order_manager.stops_realinhados_ao_fill",
+                trade_id=trade.id,
+                preco_pedido=request.price,
+                preco_fill=fill,
+            )
+        else:
+            # Falhar aqui não invalida a posição: ela existe com os stops
+            # originais, que continuam protegendo — só com distância diferente
+            # da pretendida. Registrar é o suficiente.
+            logger.warning("order_manager.realinhamento_falhou", trade_id=trade.id)
 
     def _get_symbol(self, instrument_id: int) -> str:
         instrument = self.db.get(Instrument, instrument_id)

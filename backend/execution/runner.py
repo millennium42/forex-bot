@@ -326,6 +326,7 @@ class BotRunner:
             resultado.stop_loss,
             resultado.take_profit_rr,
             resultado.risk_pct,
+            resultado.volume_max_lots,
         )
 
     def _registrar_signal(
@@ -421,6 +422,7 @@ class BotRunner:
         stop_loss_override: float | None = None,
         take_profit_rr_override: float | None = None,
         risk_pct_override: float | None = None,
+        volume_max_lots_override: float | None = None,
     ) -> None:
         if stop_loss_override is None and atr <= 0:
             # ATR zero significa volatilidade não medida. Sem ela não há stop
@@ -510,11 +512,20 @@ class BotRunner:
             )
             return
 
-        # Teto dinâmico de tamanho por ordem (história 46): depende da confiança
-        # do sinal. Confiança 10% → teto 2.0, 70% → 5.0, crescimento logarítmico.
-        # Isso incentiva o bot a aumentar o tamanho da aposta conforme fica mais
-        # confiante na leitura, sem deixar uma ordem fraca explodir o portfólio.
-        volume_max_dinamico = self._volume_max_por_confianca(fused.confidence * 100.0)
+        # Teto de tamanho por ordem. Com o stop derivado do ATR, o volume que o
+        # risco pede quase sempre estoura o teto — então é ELE, e não o
+        # `risk_pct`, que decide o tamanho real da posição.
+        #
+        # Estratégia portada declara o próprio teto, proporcional ao `Risk` da
+        # fonte. As demais caem na curva por confiança (história 46): confiança
+        # 10% -> 2.0 lotes, 70% -> 5.0, logarítmico entre elas. A curva só faz
+        # sentido para sinal de score contínuo, onde a confiança de fato varia;
+        # em estratégia binária ela é sempre 1.0 (fundida 0.7), e usá-la daria
+        # o teto máximo justamente a quem não mediu convicção nenhuma.
+        if volume_max_lots_override is not None:
+            volume_max_dinamico = volume_max_lots_override
+        else:
+            volume_max_dinamico = self._volume_max_por_confianca(fused.confidence * 100.0)
         volume = min(volume, volume_max_dinamico)
 
         # Previne erro "No money" limitando o volume à margem livre real da conta
