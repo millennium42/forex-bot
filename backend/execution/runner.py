@@ -507,7 +507,8 @@ class BotRunner:
         margin_req_per_lot = (instrument.contract_size * entry) / account.leverage
         max_vol_by_margin = (account.margin_free * folga_margem) / margin_req_per_lot
         passos_margem = math.floor(max_vol_by_margin / instrument.volume_step + 1e-9)
-        volume_limite_margem = round(passos_margem * instrument.volume_step, 8)
+        # MT5 aceita apenas 2 casas decimais (0.01 lotes)
+        volume_limite_margem = round(passos_margem * instrument.volume_step, 2)
         volume = min(volume, volume_limite_margem)
 
         if volume < instrument.min_volume:
@@ -663,7 +664,8 @@ class BotRunner:
         volume_max = 2.0 + t * 3.0  # [2.0, 5.0] span = 3.0
 
         # Clamp mínimo em 2.0 (nunca abaixo, mesmo com conf < 10%)
-        return max(2.0, volume_max)
+        # MT5 aceita apenas 2 casas decimais (0.01 lotes)
+        return round(max(2.0, volume_max), 2)
 
     @staticmethod
     def _calcular_volume(
@@ -684,7 +686,9 @@ class BotRunner:
         # Epsilon absorve erro de ponto flutuante na divisão (ex.: 6.999999999997
         # não pode arredondar para 6 quando o valor exato é 7).
         passos = math.floor(volume_bruto / instrument.volume_step + 1e-9)
-        volume = round(passos * instrument.volume_step, 8)
+        # MT5 aceita apenas 2 casas decimais (0.01 lotes), não 8.
+        # Arredondar para 2 casas garante compatibilidade com o broker.
+        volume = round(passos * instrument.volume_step, 2)
 
         if volume < instrument.min_volume:
             return None

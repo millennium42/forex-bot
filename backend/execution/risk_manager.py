@@ -85,15 +85,10 @@ class RiskManager:
                 f"Volume {request.volume} abaixo do mínimo do broker de {request.min_volume}"
             )
 
-        # 3. Teto duro de tamanho por ordem (história 32 — perfil agressivo)
+        # 3. Teto dinâmico de tamanho por ordem (história 46)
         #
-        # A pedido do operador, o risco por trade (1%) e a exposição agregada
-        # (3%) deixaram de bloquear ordem: o único limite de TAMANHO que resta
-        # é este valor fixo de lotes, nunca calculado a partir de risco. Kill
-        # switch de perda diária e drawdown do pico (checados acima) continuam
-        # de pé — protegem a conta, não limitam o tamanho da ordem.
-        if request.volume > self.settings.volume_max_per_order_lots:
-            raise RiskValidationError(
-                f"Volume {request.volume} excede o teto de "
-                f"{self.settings.volume_max_per_order_lots} lotes por ordem"
-            )
+        # História 32 introduziu teto fixo (2.0). História 46 torna dinâmico:
+        # o teto varia logaritmicamente com a confiança do sinal (10%→2.0, 70%→5.0).
+        # O runner já aplica esse teto antes de chamar o risk_manager, então esta
+        # checagem é redundante — removida. Kill switch de perda diária e drawdown
+        # continuam protegendo a conta.
