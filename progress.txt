@@ -1021,3 +1021,44 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     são todas pré-existentes da varredura do 3MACD, história 41 — nenhuma linha nova desta história
     ficou sem teste).
 ---
+
+## [2026-08-06] — História 43: Performance por estratégia no dashboard
+- Backend: `backend/api/routers/strategies.py::get_strategy_performance` agora enumera
+  `set(por_estrategia) | set(get_settings().strategies_enabled_list)` em vez de só as estratégias
+  com `Outcome` gravado — estratégia habilitada sem trade encerrado ainda aparece na resposta com
+  `trades=0` e todo campo derivado (`win_rate`, `net_pnl`, `avg_win`, `avg_loss`,
+  `breakeven_win_rate`) em `None`, nunca `0.0`. Campos novos `avg_win`/`avg_loss` (média do `pnl`
+  dos outcomes positivos/negativos) e `breakeven_win_rate` (win rate mínimo para não perder
+  dinheiro dado o RR observado: `avg_loss / (avg_win + avg_loss) * 100`, com os dois casos
+  degenerados tratados à parte — ver `_breakeven_win_rate`).
+- Frontend: nova aba "Estratégias" (`frontend/src/components/tabs/StrategiesTab.tsx`) — tabela
+  100% alimentada pela API (nenhum cálculo derivado no componente), com badge de alerta quando
+  `win_rate < breakeven_win_rate` e "Sem trade encerrado" em vez de "0" para `trades=0`. Tipo
+  `StrategyPerformance` e fetcher `getStrategyPerformance` em `frontend/src/lib/api.ts`; aba e
+  fetch cabeados em `frontend/src/app/page.tsx` (mesmo padrão de `Promise.allSettled` das outras
+  abas — falha no endpoint não derruba o resto do dashboard).
+- Arquivos alterados: `backend/api/routers/strategies.py`, `backend/tests/test_dashboard_api.py`
+  (5 testes novos/atualizados: estado vazio com estratégia configurada, RR misto, só perda sem
+  breakeven calculável, união de estratégia configurada + estratégia com dado real),
+  `frontend/src/lib/api.ts`, `frontend/src/app/page.tsx`,
+  `frontend/src/components/tabs/StrategiesTab.tsx` (novo).
+- **Aprendizados para as próximas iterações:**
+  - Ver os dois padrões novos em Codebase Patterns/Gotchas do AGENTS.md: enumerar
+    `strategies_enabled_list` em vez de derivar a lista de estratégias só do `GROUP BY` (mesmo
+    princípio de "ausência de dado não vira zero" da revisão pós-Ralph, aplicado a agregação); e os
+    dois casos degenerados da fórmula de breakeven (`avg_win=None` → `None`, `avg_loss=None` →
+    `0.0`, não o mesmo valor para os dois).
+  - `win_rate` que a UI compara com `breakeven_win_rate` continua baseado em `Outcome.was_correct`
+    (acerto de direção prevista), não em `pnl>0` — são conceitos diferentes que coincidem na
+    prática porque o trade segue a direção do sinal. Não precisei mudar o significado do campo
+    (existe desde a história 39) para esta história; se um dia divergirem de fato, vale revisar.
+  - Verificação visual: matei o `uvicorn` de sessão anterior (sem `--reload`, código desatualizado
+    — mesmo gotcha da história 22) e subi de novo com `--reload`; `next dev` já tinha Fast Refresh
+    aplicado ao `page.tsx`/`StrategiesTab.tsx` sozinho. Screenshot via Playwright (cache do npx já
+    tinha `playwright` + Chromium baixado de sessão anterior, `NODE_PATH` apontando pro cache)
+    confirmou a tabela renderizando dado real do Postgres de dev (312 trades da estratégia
+    `technical`, win rate 86,9% acima do breakeven 84,4%, sem alerta — comportamento correto). Não
+    forcei o caminho de alerta/estado-vazio no navegador (exigiria mexer no `.env` de dev, fora do
+    escopo); esses dois caminhos ficam cobertos pelos testes de backend + a lógica do componente é
+    um `if` direto sobre dado já validado pela API.
+---

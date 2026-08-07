@@ -535,7 +535,7 @@
         "destaca quando o win rate observado esta abaixo do breakeven implicado pelo RR",
         "tsc --noEmit e eslint limpos"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 44,

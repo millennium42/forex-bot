@@ -50,6 +50,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 40 — Estratégia BBRSI | ✅ |
 | 41 — Estratégia 3MACD | ✅ |
 | 42 — Estratégia 2MACDSTO | ✅ |
+| 43 — Performance por estratégia no dashboard | ✅ |
 
 ---
 
@@ -403,6 +404,26 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   indicador.macd()` direto dispara `no-any-return` no mypy strict.** `cast("pd.Series", ...)` no
   ponto de retorno (mesmo padrão de `cast(MT5Terminal, MetaTrader5)` em `mt5_client.py`) resolve sem
   suprimir o strict mode em outro lugar.
+- **Endpoint que agrega por estratégia enumera `settings.strategies_enabled_list` (config), não só
+  as estratégias que aparecem no `GROUP BY` do banco.** Antes da história 43, `/strategies/
+  performance` só devolvia linha para estratégia com `Outcome` gravado — uma estratégia habilitada
+  sem trade encerrado ainda simplesmente sumia da resposta, indistinguível de "estratégia não
+  existe" no dashboard. O fix junta `set(por_estrategia) | set(strategies_enabled_list)`: toda
+  estratégia configurada aparece, mesmo com `trades=0`, e os campos derivados (`win_rate`,
+  `net_pnl`, `avg_win`, `avg_loss`, `breakeven_win_rate`) vêm `None` nesse caso — nunca `0.0`, que o
+  front não conseguiria distinguir de "estratégia perdeu tudo". Mesmo princípio de "ausência de
+  dado não vira zero" já registrado para `/system/account` (revisão pós-Ralph), aplicado a uma
+  agregação em vez de uma leitura direta.
+- **Win rate de breakeven implícito por RR: fórmula tem dois casos degenerados, não só o feliz.**
+  `breakeven = avg_loss / (avg_win + avg_loss) * 100` exige as duas médias. Sem nenhuma vitória
+  registrada (`avg_win=None`) não há RR para embasar o cálculo → `None` (estado vazio, não 100%).
+  Sem nenhuma derrota (`avg_loss=None`) o breakeven é trivialmente 0% (qualquer win rate observado
+  já é lucrativo) → `0.0`, não `None`, porque esse caso *é* calculável. `backend/api/routers/
+  strategies.py::_breakeven_win_rate` isola essa lógica; o campo `win_rate` que a UI compara com o
+  breakeven continua baseado em `Outcome.was_correct` (acerto de direção), não em `pnl>0` — os dois
+  coincidem na prática porque o trade segue a direção do sinal, mas são conceitos diferentes; não
+  unifiquei os dois nesta história para não alterar o significado de um campo que já existia desde
+  a história 39.
 
 ---
 

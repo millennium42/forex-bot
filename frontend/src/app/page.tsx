@@ -1,6 +1,6 @@
 "use client";
 
-import { Award, History, LayoutDashboard, Radio, Receipt } from "lucide-react";
+import { Award, ChartColumnBig, History, LayoutDashboard, Radio, Receipt } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Header } from "@/components/Header";
 import { Tabs, type TabDef } from "@/components/Tabs";
@@ -11,6 +11,7 @@ import { AuditTab } from "@/components/tabs/AuditTab";
 import { GatesTab } from "@/components/tabs/GatesTab";
 import { OverviewTab } from "@/components/tabs/OverviewTab";
 import { SignalsTab } from "@/components/tabs/SignalsTab";
+import { StrategiesTab } from "@/components/tabs/StrategiesTab";
 import { TradesTab } from "@/components/tabs/TradesTab";
 import {
   getAccountStatus,
@@ -19,6 +20,7 @@ import {
   getOpenPositions,
   getPromotionStatus,
   getSignals,
+  getStrategyPerformance,
   getTradeHistory,
   type AccountStatus,
   type AuditEntry,
@@ -26,6 +28,7 @@ import {
   type OpenPosition,
   type PromotionStatus,
   type SignalRecord,
+  type StrategyPerformance,
   type TradeRecord,
 } from "@/lib/api";
 import { getPalette } from "@/lib/palette";
@@ -35,6 +38,7 @@ const TABS: TabDef[] = [
   { id: "overview", label: "Visão geral", icon: LayoutDashboard },
   { id: "trades", label: "Trades", icon: Receipt },
   { id: "signals", label: "Sinais", icon: Radio },
+  { id: "strategies", label: "Estratégias", icon: ChartColumnBig },
   { id: "gates", label: "Gates", icon: Award },
   { id: "audit", label: "Auditoria", icon: History },
 ];
@@ -62,6 +66,7 @@ export default function Dashboard() {
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
   const [promotion, setPromotion] = useState<PromotionStatus | null>(null);
   const [killSwitch, setKillSwitch] = useState<KillSwitchStatus>({ active: false });
+  const [strategyPerformance, setStrategyPerformance] = useState<StrategyPerformance[]>([]);
 
   const [selectedTrade, setSelectedTrade] = useState<TradeRecord | null>(null);
   const [selectedSignal, setSelectedSignal] = useState<SignalRecord | null>(null);
@@ -76,6 +81,7 @@ export default function Dashboard() {
       getPromotionStatus(),
       getKillSwitchStatus(),
       getOpenPositions(),
+      getStrategyPerformance(),
     ]);
 
     if (results[0].status === "fulfilled") setAccount(results[0].value);
@@ -88,6 +94,7 @@ export default function Dashboard() {
     if (results[5].status === "fulfilled") setKillSwitch(results[5].value);
     if (results[6].status === "fulfilled") setOpenPositions(results[6].value);
     else setOpenPositions([]);
+    if (results[7].status === "fulfilled") setStrategyPerformance(results[7].value);
   }, []);
 
   useEffect(() => {
@@ -120,6 +127,9 @@ export default function Dashboard() {
         <TradesTab trades={trades} currency={account.currency} onSelectTrade={setSelectedTrade} />
       )}
       {activeTab === "signals" && <SignalsTab signals={signals} onSelectSignal={setSelectedSignal} />}
+      {activeTab === "strategies" && (
+        <StrategiesTab performance={strategyPerformance} currency={account.currency} />
+      )}
       {activeTab === "gates" && <GatesTab promotion={promotion} />}
       {activeTab === "audit" && <AuditTab entries={auditEntries} />}
 

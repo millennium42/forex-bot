@@ -296,7 +296,15 @@ def _outcome_para(
 def test_strategy_performance_empty_by_default(client: TestClient) -> None:
     resp = client.get("/strategies/performance")
     assert resp.status_code == 200
-    assert resp.json() == []
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["strategy"] == "technical"
+    assert body[0]["trades"] == 0
+    assert body[0]["win_rate"] is None
+    assert body[0]["net_pnl"] is None
+    assert body[0]["avg_win"] is None
+    assert body[0]["avg_loss"] is None
+    assert body[0]["breakeven_win_rate"] is None
 
 
 def test_strategy_performance_agrega_por_estrategia(
@@ -321,7 +329,53 @@ def test_strategy_performance_agrega_por_estrategia(
     assert body["technical"]["trades"] == 2
     assert body["technical"]["win_rate"] == pytest.approx(50.0)
     assert body["technical"]["net_pnl"] == pytest.approx(5.0)
+    assert body["technical"]["avg_win"] == pytest.approx(10.0)
+    assert body["technical"]["avg_loss"] == pytest.approx(5.0)
+    assert body["technical"]["breakeven_win_rate"] == pytest.approx(33.333333)
 
     assert body["bbrsi"]["trades"] == 1
     assert body["bbrsi"]["win_rate"] == pytest.approx(100.0)
     assert body["bbrsi"]["net_pnl"] == pytest.approx(20.0)
+    assert body["bbrsi"]["avg_win"] == pytest.approx(20.0)
+    assert body["bbrsi"]["avg_loss"] is None
+    assert body["bbrsi"]["breakeven_win_rate"] == pytest.approx(0.0)
+
+
+def test_strategy_performance_so_perdas_nao_tem_breakeven_calculavel(
+    client: TestClient, api_session: Session
+) -> None:
+    instrument = Instrument(symbol="EURUSD", digits=5, point=0.00001, contract_size=100_000)
+    api_session.add(instrument)
+    api_session.commit()
+
+    tecnica = _signal_com_estrategia(api_session, instrument, "technical")
+    _outcome_para(api_session, instrument, tecnica, pnl=-8.0, was_correct=False)
+
+    resp = client.get("/strategies/performance")
+    assert resp.status_code == 200
+    body = {row["strategy"]: row for row in resp.json()}
+
+    assert body["technical"]["trades"] == 1
+    assert body["technical"]["win_rate"] == pytest.approx(0.0)
+    assert body["technical"]["avg_win"] is None
+    assert body["technical"]["avg_loss"] == pytest.approx(8.0)
+    assert body["technical"]["breakeven_win_rate"] is None
+
+
+def test_strategy_performance_inclui_estrategia_sem_outcome_junto_com_dados_reais(
+    client: TestClient, api_session: Session
+) -> None:
+    instrument = Instrument(symbol="EURUSD", digits=5, point=0.00001, contract_size=100_000)
+    api_session.add(instrument)
+    api_session.commit()
+
+    bbrsi = _signal_com_estrategia(api_session, instrument, "bbrsi")
+    _outcome_para(api_session, instrument, bbrsi, pnl=1.0, was_correct=True)
+
+    resp = client.get("/strategies/performance")
+    assert resp.status_code == 200
+    body = {row["strategy"]: row for row in resp.json()}
+
+    assert set(body) == {"technical", "bbrsi"}
+    assert body["technical"]["trades"] == 0
+    assert body["technical"]["net_pnl"] is None

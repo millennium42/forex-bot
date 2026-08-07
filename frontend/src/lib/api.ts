@@ -112,6 +112,16 @@ export interface KillSwitchStatus {
   active: boolean;
 }
 
+export interface StrategyPerformance {
+  strategy: string;
+  trades: number;
+  win_rate: number | null;
+  net_pnl: number | null;
+  avg_win: number | null;
+  avg_loss: number | null;
+  breakeven_win_rate: number | null;
+}
+
 export interface TradeHistoryFilters {
   symbol?: string;
   status?: string;
@@ -159,6 +169,10 @@ export function getPromotionStatus(): Promise<PromotionStatus> {
 
 export function getKillSwitchStatus(): Promise<KillSwitchStatus> {
   return getJson<KillSwitchStatus>("/system/kill-switch");
+}
+
+export function getStrategyPerformance(): Promise<StrategyPerformance[]> {
+  return getJson<StrategyPerformance[]>("/strategies/performance");
 }
 
 async function postJson<T>(path: string, body: unknown): Promise<T> {
