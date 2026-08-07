@@ -47,6 +47,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 37 — Auditoria contínua do banco | ✅ |
 | 38 — Perfil de lançamento: 33s, 4 pares, sem sentimento | ✅ |
 | 39 — Arquitetura de estratégias paralelas | ✅ |
+| 40 — Estratégia BBRSI | ✅ |
 
 ---
 
@@ -323,6 +324,43 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   graça a checagem de NaN (série curta ou em aquecimento já devolve `None` sem código extra),
   desde que a janela do fator novo seja menor que `minimum_candles()` (35, imposto pelo MACD) —
   janelas de até ~20-33 candles não exigem mexer nessa constante.
+- **Estratégia de padrão gráfico (BBRSI, história 40) é sinal binário, não score contínuo — e o
+  registro é a fonte externa (fonte MQL5 do EA), não invenção.** Diferente de `TechnicalStrategy`
+  (média de componentes contínuos), `BBRSIStrategy.evaluate` verifica as seis condições exatas do
+  EA original (`RSI[2]`/`Close[2]` = `iloc[-2]`, `RSI[1]`/`Close[1]` = `iloc[-1]` — o índice 0 da
+  fonte MQL5 é a barra ainda em formação, que não existe no nosso DataFrame de candles fechados) e
+  devolve `score=±1.0, confidence=1.0` quando batem, ou `HOLD` com `confidence=0.0` quando não —
+  não há posição intermediária, porque a fonte não tem. Ao portar uma estratégia de outro
+  repositório, buscar o `.mq5`/código-fonte real (`WebFetch` no raw do GitHub) em vez de assumir a
+  partir da descrição do PRD é o que evita reinterpretar errado uma condição — a descrição do PRD
+  aqui já vinha extraída literalmente da fonte, mas o coeficiente do SL (`SLCoef=0.9`) e a
+  convenção de índice de barra só apareceram lendo o `.mq5`.
+- **`StrategySignal` ganhou `stop_loss: float | None = None` para uma estratégia definir o próprio
+  stop, e o runner passou a aceitar `stop_loss_override` em `_executar`.** Até a história 40, todo
+  stop vinha do ATR global (`atr * atr_sl_multiplier`); BBRSI deriva o stop da própria banda
+  (`BB_L - coef*(BB_M-BB_L)`), incompatível com essa fórmula. Quando o override está presente, o
+  guard de `atr<=0` (que bloqueava ordem sem volatilidade medida) é pulado — ele só faz sentido
+  quando o stop *depende* do ATR — e `distancia_sl` vira `abs(entry - stop_loss)` para o resto do
+  pipeline (volume por risco, take profit por RR) continuar funcionando sem duplicar lógica. Esse é
+  o padrão a seguir para 3MACD/2MACDSTO (histórias 41-42) caso alguma delas também defina stop
+  próprio — checar a fonte antes de assumir que é o caso; nem toda estratégia da fonte tem SL
+  derivado do próprio indicador.
+- **`STRATEGY_REGISTRY` cresceu, e isso quebra qualquer teste que usava um nome de estratégia
+  "desconhecida" igual ao nome real de uma história ainda não implementada.** Dois testes
+  (`test_strategy.py::test_build_enabled_strategies_nome_desconhecido_falha` e
+  `test_runner.py::test_botrunner_falha_no_boot_com_estrategia_desconhecida`) usavam `"bbrsi"`
+  como exemplo de nome inválido — válido só até esta história registrar `"bbrsi"` de verdade. Ao
+  registrar uma estratégia nova, `grep` pelo nome dela em todo `backend/tests/` antes de rodar a
+  suíte: um teste "nome desconhecido" que usa por acaso o nome que está prestes a virar válido
+  passa a falhar silenciosamente ao ficar sem cobrir o caminho de erro que deveria testar.
+- **Candle mínimo de uma estratégia (`bb_len + 1` no BBRSI) não é o mesmo mínimo do
+  `technical_analyzer` (`minimum_candles()`, 35) nem do `CANDLES_POR_CICLO` do runner (120).** Com
+  os defaults reais da fonte (`BB_LEN=500`), a estratégia só produz sinal com pelo menos 501
+  candles — mais que o runner busca hoje. Isso é esperado e não bloqueia a história (a AC pede
+  justamente que série curta devolva `None`, não sinal forjado), mas registrar aqui: habilitar
+  `"bbrsi"` em `STRATEGIES_ENABLED` sem também aumentar `CANDLES_POR_CICLO` deixa a estratégia
+  sempre em `None` — decisão de configuração do operador, não bug, mas fácil de não perceber sem
+  este registro.
 
 ---
 

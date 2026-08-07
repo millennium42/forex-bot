@@ -497,7 +497,7 @@
         "SL derivado da banda (BB_L - coef*(BB_M-BB_L)) como na fonte, nao do ATR global",
         "teste com serie fixture que dispara compra, outra que dispara venda e outra neutra"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 41,

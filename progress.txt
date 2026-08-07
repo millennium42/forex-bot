@@ -881,3 +881,48 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     MT5/IntegrityError). Cobertura global da suíte seguiu ≥80% (93,5%); não mexi nisso por não ser
     escopo desta história.
 ---
+
+## [2026-08-06] — História 40: Estratégia BBRSI
+- `BBRSIStrategy` em `backend/analysis/strategy.py`: porta fiel de `BBRSI.mq5`
+  (github.com/geraked/metatrader5/blob/master/Experts/BBRSI.mq5), Bollinger(500, 2.0) + RSI(7),
+  reversão à média. `evaluate` verifica as seis condições de compra (RSI[-2]<30 e fechamento
+  abaixo da banda inferior; RSI[-1] volta acima de 30, fechamento volta acima da banda inferior,
+  RSI[-1] ainda <50 e fechamento ainda abaixo da média) e o espelho de venda (70/50/banda
+  superior). Registrada como `"bbrsi"` em `STRATEGY_REGISTRY`.
+- `StrategySignal` ganhou o campo `stop_loss: float | None = None`. BBRSI o preenche com a fórmula
+  da fonte (`BB_L - SLCoef*(BB_M-BB_L)` na compra, espelho na venda, `SLCoef=0.9` default);
+  `TechnicalStrategy` deixa `None` e mantém o comportamento antigo.
+- `backend/execution/runner.py`: `_executar` ganhou o parâmetro `stop_loss_override`. Quando
+  presente (vindo de `resultado.stop_loss` via `_avaliar_estrategia`), o stop da estratégia
+  substitui o ATR global — `distancia_sl` vira `abs(entry-stop)` e o take profit continua no mesmo
+  RR configurado, agora aplicado sobre essa distância. O guard `atr<=0` só bloqueia quando NÃO há
+  override (uma estratégia com stop próprio não depende de volatilidade medida).
+- Arquivos alterados: `backend/analysis/strategy.py`, `backend/execution/runner.py`,
+  `backend/tests/test_strategy.py` (9 testes novos: série curta com os defaults reais BB(500),
+  série curta com período configurado, compra, venda, neutro/HOLD, nome, registro,
+  `build_enabled_strategies`), `backend/tests/test_runner.py` (3 testes novos: override substitui
+  ATR mesmo com `atr=0.0`, override igual à entrada bloqueia por `stop_invalido`, `_process_symbol`
+  ponta-a-ponta com uma `_StubStrategy` que carrega `stop_loss`), `prd.json`.
+- **Aprendizados para as próximas iterações:**
+  - Fonte real (`WebFetch` no raw do GitHub) em vez de só a descrição do PRD: o coeficiente do SL
+    (`SLCoef=0.9`) e a convenção de índice de barra (0=barra em formação, 1=último candle fechado,
+    2=penúltimo — o MQL5 usa `ArraySetAsSeries`) só apareceram lendo o `.mq5` de verdade. A
+    descrição do PRD já vinha extraída da fonte, mas não citava o coeficiente.
+  - Ver os quatro padrões novos no topo do arquivo (Codebase Patterns): estratégia de padrão
+    gráfico é sinal binário; `stop_loss_override` no runner; `STRATEGY_REGISTRY` crescendo quebra
+    teste que usa nome de estratégia futura como exemplo de "desconhecida"; candle mínimo por
+    estratégia é independente do `CANDLES_POR_CICLO` do runner.
+  - Fixtures de teste usaram BB(20)/RSI(3) em vez dos defaults reais BB(500)/RSI(7) — a própria AC
+    de "período configurável" existe para isso. Encontrar uma série de 22 candles que dispara as
+    seis condições exatas exigiu busca por força bruta (`ta` real rodado num script, não os
+    indicadores reimplementados à mão) — Bollinger de janela curta é sensível: um candle extremo
+    dentro da própria janela infla o desvio padrão junto, então "furar a banda" com só 1-2 barras
+    de amplitude não funciona; precisa de uma linha de base de baixa volatilidade (sawtooth) antes
+    do movimento brusco para o desvio padrão ficar pequeno o bastante.
+  - `ruff format` reflui automaticamente linha `E501` de dict/tuple longos — rodar `ruff format`
+    antes de `ruff check` nos arquivos tocados evita ping-pong manual de quebra de linha.
+  - Reescrever `prd.json` inteiro via `json.dump` troca CRLF por LF e explode o diff em ~580
+    linhas por causa da mudança de terminador, mesmo alterando 1 campo. O arquivo é CRLF — usar
+    `Edit` (troca de string pontual) para marcar `"passes": true`, nunca reserializar o JSON
+    inteiro.
+---

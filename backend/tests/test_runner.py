@@ -958,6 +958,89 @@ def test_executar_com_stop_loss_nao_positivo_nao_gera_ordem(session: Session) ->
     assert _motivos_bloqueio(session) == ["stop_invalido"]
 
 
+# -- história 40: stop_loss_override (estratégia com stop próprio) -----------
+
+
+def test_executar_com_stop_loss_override_usa_stop_da_estrategia_nao_do_atr(
+    session: Session,
+) -> None:
+    """AC da história 40: BBRSI deriva o SL da banda, não do ATR global."""
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    entrada = client.get_tick("EURUSD").ask
+    stop_override = entrada - 0.0050
+
+    # ATR=0.0 normalmente bloquearia a ordem (atr_invalido) — com override
+    # presente, o ATR nem é consultado para o stop.
+    runner._executar(
+        "EURUSD",
+        BUY_SIGNAL,
+        0.0,
+        client,
+        session,
+        order_manager,
+        instrumento,
+        stop_loss_override=stop_override,
+    )
+
+    trade = session.execute(select(Trade)).scalars().one()
+    distancia_sl = entrada - stop_override
+    assert trade.stop_loss == pytest.approx(stop_override)
+    assert trade.take_profit == pytest.approx(
+        entrada + distancia_sl * runner.settings.take_profit_rr
+    )
+    assert _motivos_bloqueio(session) == []
+
+
+def test_executar_com_stop_loss_override_igual_a_entrada_bloqueia(session: Session) -> None:
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    entrada = client.get_tick("EURUSD").ask
+
+    runner._executar(
+        "EURUSD",
+        BUY_SIGNAL,
+        0.0,
+        client,
+        session,
+        order_manager,
+        instrumento,
+        stop_loss_override=entrada,
+    )
+
+    assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["stop_invalido"]
+
+
+def test_process_symbol_estrategia_com_stop_loss_proprio_e_usado_na_ordem(
+    session: Session,
+) -> None:
+    candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
+    client = _client(FakeTerminal(candle_rows=candles))
+    entrada = client.get_tick("EURUSD").ask
+    stop_override = entrada - 0.0100
+    bbrsi = _StubStrategy(
+        "bbrsi",
+        resultado=StrategySignal(
+            direction=Direction.BUY, confidence=0.9, score=0.9, stop_loss=stop_override
+        ),
+    )
+    runner = _runner(min_signal_confidence=0.01)
+    runner._strategies = [bbrsi]
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    trade = session.execute(select(Trade)).scalars().one()
+    assert trade.stop_loss == pytest.approx(stop_override)
+
+
 # -- run(): conecta, roda N ciclos e dorme entre eles -------------------------
 
 
@@ -1132,4 +1215,4 @@ def test_registrar_bloqueio_estrategias_diferentes_nao_sao_deduplicadas(session:
 
 def test_botrunner_falha_no_boot_com_estrategia_desconhecida() -> None:
     with pytest.raises(ValueError, match="estrategia desconhecida"):
-        _runner(strategies_enabled="bbrsi")
+        _runner(strategies_enabled="3macd")

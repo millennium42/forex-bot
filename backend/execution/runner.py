@@ -314,7 +314,16 @@ class BotRunner:
             return
 
         self._executar(
-            symbol, fused, atr, client, session, order_manager, instrument, signal.id, strategy_name
+            symbol,
+            fused,
+            atr,
+            client,
+            session,
+            order_manager,
+            instrument,
+            signal.id,
+            strategy_name,
+            resultado.stop_loss,
         )
 
     def _registrar_signal(
@@ -407,10 +416,13 @@ class BotRunner:
         instrument: Instrument,
         signal_id: int | None = None,
         strategy: str = "technical",
+        stop_loss_override: float | None = None,
     ) -> None:
-        if atr <= 0:
+        if stop_loss_override is None and atr <= 0:
             # ATR zero significa volatilidade não medida. Sem ela não há stop
-            # defensável, e ordem sem stop defensável não sai.
+            # defensável, e ordem sem stop defensável não sai. Só se aplica
+            # quando o stop viria do ATR — uma estratégia com stop próprio
+            # (história 40) não depende dele.
             logger.warning("runner.atr_invalido", symbol=symbol, atr=atr)
             self._registrar_bloqueio(session, "atr_invalido", symbol, strategy, atr=atr)
             return
@@ -432,14 +444,24 @@ class BotRunner:
         tick = client.get_tick(symbol)
         entry = tick.ask if side is Side.BUY else tick.bid
 
-        # Stop por volatilidade (§4 do PRD), não por distância fixa: o mesmo
-        # número de pontos significa coisas diferentes em pares diferentes.
-        distancia_sl = atr * self.settings.atr_sl_multiplier
+        if stop_loss_override is not None:
+            # Estratégia de padrão gráfico com stop próprio (história 40):
+            # o stop vem da leitura dela (ex.: banda de Bollinger), não do
+            # ATR global. O alvo continua no mesmo RR configurado, aplicado
+            # sobre a distância real desse stop.
+            stop_loss = stop_loss_override
+            distancia_sl = abs(entry - stop_loss)
+        else:
+            # Stop por volatilidade (§4 do PRD), não por distância fixa: o
+            # mesmo número de pontos significa coisas diferentes em pares
+            # diferentes.
+            distancia_sl = atr * self.settings.atr_sl_multiplier
+            stop_loss = entry - distancia_sl if side is Side.BUY else entry + distancia_sl
+
         distancia_tp = distancia_sl * self.settings.take_profit_rr
-        stop_loss = entry - distancia_sl if side is Side.BUY else entry + distancia_sl
         take_profit = entry + distancia_tp if side is Side.BUY else entry - distancia_tp
 
-        if stop_loss <= 0:
+        if stop_loss <= 0 or distancia_sl <= 0:
             logger.warning("runner.stop_invalido", symbol=symbol, stop_loss=stop_loss)
             self._registrar_bloqueio(
                 session, "stop_invalido", symbol, strategy, stop_loss=stop_loss
