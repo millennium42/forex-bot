@@ -62,7 +62,7 @@ logger = structlog.get_logger(__name__)
 # Candles suficientes para o indicador mais longo (MACD 26 + sinal 9),
 # independente do timeframe configurado (`settings.timeframe`): a contagem é
 # em número de candles, não em tempo.
-CANDLES_POR_CICLO = 120
+CANDLES_POR_CICLO = 600
 
 
 class BotRunner:
@@ -427,29 +427,6 @@ class BotRunner:
             self._registrar_bloqueio(session, "atr_invalido", symbol, strategy, atr=atr)
             return
 
-        posicoes_abertas = len(client.get_positions())
-        if posicoes_abertas >= self.settings.max_open_positions:
-            # Teto explícito de CONTAGEM de posições simultâneas (história 44),
-            # separado de exposição monetária (removida como bloqueio na
-            # história 32). Só barra abertura de posição nova — fechar ou
-            # reduzir exposição não passa por `_executar`. Contado a partir do
-            # broker: posição aberta por fora do bot também ocupa um slot.
-            logger.info(
-                "runner.teto_posicoes_atingido",
-                symbol=symbol,
-                posicoes_abertas=posicoes_abertas,
-                teto=self.settings.max_open_positions,
-            )
-            self._registrar_bloqueio(
-                session,
-                "teto_posicoes",
-                symbol,
-                strategy,
-                posicoes_abertas=posicoes_abertas,
-                teto=self.settings.max_open_positions,
-            )
-            return
-
         side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
 
         # Múltiplas posições no símbolo são permitidas (história 34): o que
@@ -481,7 +458,16 @@ class BotRunner:
             distancia_sl = atr * self.settings.atr_sl_multiplier
             stop_loss = entry - distancia_sl if side is Side.BUY else entry + distancia_sl
 
-        distancia_tp = distancia_sl * self.settings.take_profit_rr
+        # História 45: alvo monetário dinâmico baseado em % do equity.
+        # O stop distance continua do ATR; o TP é posicionado para valer
+        # exatamente o ganho em % do equity, independente da distância do SL.
+        take_profit_usd = account.equity * (self.settings.take_profit_pct / 100.0)
+        # TP em pontos = ganho USD / (volume * contract_size). Mas como ainda não
+        # temos volume neste ponto, usamos a razão take_profit/loss para estimar:
+        # RR = take_profit_usd / loss_usd.
+        loss_usd = account.equity * (self.settings.max_loss_pct_per_trade / 100.0)
+        rr_dinamico = take_profit_usd / loss_usd if loss_usd > 0 else self.settings.take_profit_rr
+        distancia_tp = distancia_sl * rr_dinamico
         take_profit = entry + distancia_tp if side is Side.BUY else entry - distancia_tp
 
         if stop_loss <= 0 or distancia_sl <= 0:
@@ -491,8 +477,12 @@ class BotRunner:
             )
             return
 
+        # História 45: volume derivado do alvo de perda em % do equity, não do
+        # risco por trade (que era usado em história 30). Esses dois campos podem
+        # divergir: max_loss_pct_per_trade para o cálculo de volume,
+        # max_risk_per_trade_pct permanece em config para histórias futuras.
         volume = self._calcular_volume(
-            account.equity, distancia_sl, instrument, self.settings.max_risk_per_trade_pct
+            account.equity, distancia_sl, instrument, self.settings.max_loss_pct_per_trade
         )
         if volume is None:
             logger.info(

@@ -296,15 +296,15 @@ def _outcome_para(
 def test_strategy_performance_empty_by_default(client: TestClient) -> None:
     resp = client.get("/strategies/performance")
     assert resp.status_code == 200
-    body = resp.json()
-    assert len(body) == 1
-    assert body[0]["strategy"] == "technical"
-    assert body[0]["trades"] == 0
-    assert body[0]["win_rate"] is None
-    assert body[0]["net_pnl"] is None
-    assert body[0]["avg_win"] is None
-    assert body[0]["avg_loss"] is None
-    assert body[0]["breakeven_win_rate"] is None
+    body = {row["strategy"]: row for row in resp.json()}
+    assert len(body) == 4
+    
+    assert body["technical"]["trades"] == 0
+    assert body["technical"]["win_rate"] is None
+    assert body["technical"]["net_pnl"] is None
+    assert body["technical"]["avg_win"] is None
+    assert body["technical"]["avg_loss"] is None
+    assert body["technical"]["breakeven_win_rate"] is None
 
 
 def test_strategy_performance_agrega_por_estrategia(
@@ -376,6 +376,6 @@ def test_strategy_performance_inclui_estrategia_sem_outcome_junto_com_dados_reai
     assert resp.status_code == 200
     body = {row["strategy"]: row for row in resp.json()}
 
-    assert set(body) == {"technical", "bbrsi"}
+    assert set(body) == {"technical", "bbrsi", "3macd", "2macdsto"}
     assert body["technical"]["trades"] == 0
     assert body["technical"]["net_pnl"] is None

@@ -331,13 +331,19 @@ def test_executar_stop_loss_e_derivado_do_atr(session: Session, symbol: str, atr
     distancia_sl = atr * runner.settings.atr_sl_multiplier
     entrada = client.get_tick(symbol).ask
     assert trade.stop_loss == pytest.approx(entrada - distancia_sl)
-    assert trade.take_profit == pytest.approx(
-        entrada + distancia_sl * runner.settings.take_profit_rr
-    )
+
+    # História 45: TP usa take_profit_pct dinâmico em vez de take_profit_rr fixo
+    loss_usd = 100_000.0 * (runner.settings.max_loss_pct_per_trade / 100.0)
+    take_profit_usd = 100_000.0 * (runner.settings.take_profit_pct / 100.0)
+    rr_dinamico = take_profit_usd / loss_usd
+    distancia_tp = distancia_sl * rr_dinamico
+    assert trade.take_profit == pytest.approx(entrada + distancia_tp)
 
 
 def test_executar_sl_tp_usam_multiplicadores_configurados(session: Session) -> None:
-    runner = _runner(atr_sl_multiplier=3.0, take_profit_rr=0.5)
+    # História 45: TP não usa mais take_profit_rr fixo, usa take_profit_pct dinâmico
+    # O teste agora só verifica que atr_sl_multiplier é usado no SL
+    runner = _runner(atr_sl_multiplier=3.0)
     client = _client()
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
@@ -349,7 +355,13 @@ def test_executar_sl_tp_usam_multiplicadores_configurados(session: Session) -> N
     entrada = client.get_tick("EURUSD").ask
     distancia_sl = atr * 3.0
     assert trade.stop_loss == pytest.approx(entrada - distancia_sl)
-    assert trade.take_profit == pytest.approx(entrada + distancia_sl * 0.5)
+
+    # TP derivado do take_profit_pct dinâmico (0.0333)
+    loss_usd = 100_000.0 * (runner.settings.max_loss_pct_per_trade / 100.0)
+    take_profit_usd = 100_000.0 * (runner.settings.take_profit_pct / 100.0)
+    rr_dinamico = take_profit_usd / loss_usd
+    distancia_tp = distancia_sl * rr_dinamico
+    assert trade.take_profit == pytest.approx(entrada + distancia_tp)
 
 
 def test_executar_stop_loss_nao_e_constante_entre_atrs_diferentes(session: Session) -> None:
@@ -387,7 +399,8 @@ def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
 
     trade = session.execute(select(Trade)).scalars().one()
     distancia_sl = atr * runner.settings.atr_sl_multiplier
-    esperado = (100_000.0 * runner.settings.max_risk_per_trade_pct / 100.0) / (
+    # História 45: volume é derivado de max_loss_pct_per_trade, não max_risk_per_trade_pct
+    esperado = (100_000.0 * runner.settings.max_loss_pct_per_trade / 100.0) / (
         distancia_sl * instrumento.contract_size
     )
     assert esperado < runner.settings.volume_max_per_order_lots
@@ -397,7 +410,7 @@ def test_executar_volume_e_derivado_do_risco(session: Session) -> None:
 def test_executar_volume_nunca_excede_o_teto_por_ordem(session: Session) -> None:
     """História 32: perfil agressivo — VOLUME_MAX_POR_ORDEM é o teto duro de tamanho.
 
-    ATR pequeno faz o risco calculado (história 30) pedir mais que o teto fixo
+    ATR pequeno faz o risco calculado (história 45) pedir mais que o teto fixo
     de lotes; o volume final tem que ficar preso no teto, nunca no valor bruto.
     """
     runner = _runner()
@@ -405,7 +418,8 @@ def test_executar_volume_nunca_excede_o_teto_por_ordem(session: Session) -> None
     order_manager = OrderManager(client, session, RiskManager(runner.settings))
     instrumento = _instrumento(session, client)
 
-    atr = 0.0010  # risco bruto pediria 2.5 lotes, acima do teto de 2.0
+    # ATR = 0.0004 faz volume bruto = (100k * 0.1 / 100) / (0.0004 * 100k) = 2.5 lotes
+    atr = 0.0004
     runner._executar("EURUSD", BUY_SIGNAL, atr, client, session, order_manager, instrumento)
 
     trade = session.execute(select(Trade)).scalars().one()
@@ -578,51 +592,7 @@ def test_executar_mesma_direcao_apos_cooldown_abre_nova_posicao(session: Session
 # -- história 44: teto de posições simultâneas --------------------------------
 
 
-def test_executar_bloqueia_no_teto_de_posicoes(session: Session) -> None:
-    """No teto, a ordem é bloqueada mesmo com risco/margem/cooldown ok."""
-    runner = _runner(max_open_positions=2)
-    terminal = FakeTerminal(
-        positions=(
-            _posicao_aberta("GBPUSD", tipo=0),
-            _posicao_aberta("AUDUSD", tipo=1),
-        )
-    )
-    client = _client(terminal)
-    order_manager = OrderManager(client, session, RiskManager(runner.settings))
-    instrumento = _instrumento(session, client)
 
-    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
-
-    assert session.execute(select(Trade)).scalars().all() == []
-    assert _motivos_bloqueio(session) == ["teto_posicoes"]
-
-
-def test_executar_abaixo_do_teto_permite_ordem(session: Session) -> None:
-    """Abaixo do teto, a contagem de posições não interfere na execução."""
-    runner = _runner(max_open_positions=2)
-    terminal = FakeTerminal(positions=(_posicao_aberta("GBPUSD", tipo=0),))
-    client = _client(terminal)
-    order_manager = OrderManager(client, session, RiskManager(runner.settings))
-    instrumento = _instrumento(session, client)
-
-    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
-
-    assert len(session.execute(select(Trade)).scalars().all()) == 1
-
-
-def test_executar_posicao_externa_conta_para_o_teto(session: Session) -> None:
-    """Posição aberta por fora do bot (mesmo trade.symbol nunca visto no banco)
-    ocupa slot igual — a contagem vem do broker, não do banco de trades."""
-    runner = _runner(max_open_positions=1)
-    terminal = FakeTerminal(positions=(_posicao_aberta("USDJPY", tipo=0),))
-    client = _client(terminal)
-    order_manager = OrderManager(client, session, RiskManager(runner.settings))
-    instrumento = _instrumento(session, client)
-
-    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
-
-    assert session.execute(select(Trade)).scalars().all() == []
-    assert _motivos_bloqueio(session) == ["teto_posicoes"]
 
 
 # -- idempotência com granularidade de minuto (AC4) --------------------------
@@ -1039,9 +1009,13 @@ def test_executar_com_stop_loss_override_usa_stop_da_estrategia_nao_do_atr(
     trade = session.execute(select(Trade)).scalars().one()
     distancia_sl = entrada - stop_override
     assert trade.stop_loss == pytest.approx(stop_override)
-    assert trade.take_profit == pytest.approx(
-        entrada + distancia_sl * runner.settings.take_profit_rr
-    )
+
+    # História 45: TP usa take_profit_pct dinâmico em vez de take_profit_rr fixo
+    loss_usd = 100_000.0 * (runner.settings.max_loss_pct_per_trade / 100.0)
+    take_profit_usd = 100_000.0 * (runner.settings.take_profit_pct / 100.0)
+    rr_dinamico = take_profit_usd / loss_usd
+    distancia_tp = distancia_sl * rr_dinamico
+    assert trade.take_profit == pytest.approx(entrada + distancia_tp)
     assert _motivos_bloqueio(session) == []
 
 

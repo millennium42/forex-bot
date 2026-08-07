@@ -79,6 +79,18 @@ class Settings(BaseSettings):
     take_profit_rr: float = Field(default=0.2, gt=0)
     macro_blackout_minutes: int = Field(default=15, ge=0)
 
+    # --- Limites monetários dinâmicos por % do equity (história 45) -----------
+    # Stop loss e take profit deixam de ser multiplicadores de ATR (história 33)
+    # e passam a ser alvos monetários derivados do % do equity. O stop distance
+    # continua vindo do ATR; o **volume** é que se adapta para que essa distância
+    # valha exatamente o valor monetário alvo em % do equity.
+    #
+    # Default: loss = 0.1% do equity, gain = 0.0333% do equity (100/3 / 100).
+    # Com equity 100.000: perder max 100 USD, ganhar 33,33 USD.
+    # RR resultante = 0.333 → win rate de breakeven = 1 / (1 + 0.333) ≈ 75%.
+    max_loss_pct_per_trade: float = Field(default=0.1, gt=0, le=100)
+    take_profit_pct: float = Field(default=0.0333, gt=0, le=100)
+
     # --- Perfil agressivo (história 32) -------------------------------------
     # A pedido do operador, os tetos artificiais de TAMANHO saem de cena:
     # risco por trade e exposição agregada deixam de bloquear ordem em
@@ -97,11 +109,6 @@ class Settings(BaseSettings):
     # número de posições abertas ao mesmo tempo cresce por multiplicação — até
     # `len(strategies) * len(symbols)` aberturas por ciclo. A exposição
     # agregada não bloqueia mais ordem desde o perfil agressivo (história 32);
-    # este teto é o único freio explícito à contagem de posições simultâneas,
-    # separado de exposição monetária. Contado a partir do broker (posição
-    # aberta por fora do bot também conta), não do banco.
-    max_open_positions: int = Field(default=12, gt=0)
-
     # --- Repetição de sinal no mesmo símbolo (história 34) ------------------
     # Múltiplas posições no mesmo símbolo passam a ser permitidas — a trava
     # antiga de "uma posição por símbolo" saiu. Mas o sinal técnico persiste

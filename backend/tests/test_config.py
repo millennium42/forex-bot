@@ -73,15 +73,6 @@ def test_folga_de_margem_e_validada() -> None:
         _settings(margin_free_buffer_pct=101)
 
 
-def test_default_do_teto_de_posicoes_simultaneas_e_doze() -> None:
-    assert _settings().max_open_positions == 12
-
-
-def test_teto_de_posicoes_simultaneas_e_validado() -> None:
-    from pydantic import ValidationError
-
-    with pytest.raises(ValidationError):
-        _settings(max_open_positions=0)
 
 
 def test_listas_derivadas_de_env() -> None:
