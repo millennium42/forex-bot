@@ -427,6 +427,29 @@ class BotRunner:
             self._registrar_bloqueio(session, "atr_invalido", symbol, strategy, atr=atr)
             return
 
+        posicoes_abertas = len(client.get_positions())
+        if posicoes_abertas >= self.settings.max_open_positions:
+            # Teto explícito de CONTAGEM de posições simultâneas (história 44),
+            # separado de exposição monetária (removida como bloqueio na
+            # história 32). Só barra abertura de posição nova — fechar ou
+            # reduzir exposição não passa por `_executar`. Contado a partir do
+            # broker: posição aberta por fora do bot também ocupa um slot.
+            logger.info(
+                "runner.teto_posicoes_atingido",
+                symbol=symbol,
+                posicoes_abertas=posicoes_abertas,
+                teto=self.settings.max_open_positions,
+            )
+            self._registrar_bloqueio(
+                session,
+                "teto_posicoes",
+                symbol,
+                strategy,
+                posicoes_abertas=posicoes_abertas,
+                teto=self.settings.max_open_positions,
+            )
+            return
+
         side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
 
         # Múltiplas posições no símbolo são permitidas (história 34): o que

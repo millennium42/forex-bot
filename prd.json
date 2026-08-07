@@ -548,7 +548,7 @@
         "teto nao impede fechar posicao nem reduzir exposicao",
         "teste: no teto bloqueia; abaixo permite; posicao externa conta"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 45,

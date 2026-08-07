@@ -1062,3 +1062,26 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     escopo); esses dois caminhos ficam cobertos pelos testes de backend + a lógica do componente é
     um `if` direto sobre dado já validado pela API.
 ---
+
+## [2026-08-06] — História 44: Teto de posições simultâneas
+- `Settings.max_open_positions` (config.py, default 12) é o novo teto de CONTAGEM de posições
+  abertas ao mesmo tempo, separado de exposição monetária (removida como bloqueio na história 32).
+  `BotRunner._executar` conta `len(client.get_positions())` — todo o broker, não filtrado por
+  símbolo — logo após o guard de ATR e antes do cálculo de cooldown/volume/margem; no teto ou acima,
+  bloqueia com motivo `teto_posicoes` (via `_registrar_bloqueio`, história 36) e não chega a montar
+  a ordem.
+- Arquivos alterados: `backend/config.py` (`max_open_positions`), `backend/execution/runner.py`
+  (`_executar`), `backend/tests/test_config.py` (default + validação), `backend/tests/test_runner.py`
+  (3 testes novos: no teto bloqueia mesmo com risco/margem/cooldown ok, abaixo do teto não interfere,
+  posição aberta por fora do bot conta para o teto).
+- **Aprendizados para as próximas iterações:**
+  - Ver padrão novo em Codebase Patterns/AGENTS.md: teto de contagem é ortogonal a teto de
+    exposição/margem — os dois convivem sem se substituir. Mesmo princípio de "contagem vem do
+    broker, não do banco" já usado no cooldown por leitura distinta (história 34).
+  - Não precisei tocar `run_cycle`/kill switch/drawdown: o teto é por tentativa de abertura, não por
+    ciclo inteiro — cada símbolo/estratégia processado no mesmo ciclo já vê a contagem atualizada do
+    broker (inclusive posições abertas por estratégias anteriores no mesmo ciclo), então não há
+    necessidade de um contador em memória nem de checar uma vez só no início do ciclo.
+  - Suíte completa: 491 testes, coverage global 93.37%, `runner.py` 99% (falta só 1 linha,
+    `RiskValidationError` inalcançável já registrado como gap conhecido desde a história 21).
+---

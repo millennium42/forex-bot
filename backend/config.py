@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     # cálculo do volume e o envio da ordem ao broker.
     margin_free_buffer_pct: float = Field(default=95.0, gt=0, le=100)
 
+    # --- Teto de posições simultâneas (história 44) -------------------------
+    # Com estratégias paralelas (história 39) rodando nos mesmos pares, o
+    # número de posições abertas ao mesmo tempo cresce por multiplicação — até
+    # `len(strategies) * len(symbols)` aberturas por ciclo. A exposição
+    # agregada não bloqueia mais ordem desde o perfil agressivo (história 32);
+    # este teto é o único freio explícito à contagem de posições simultâneas,
+    # separado de exposição monetária. Contado a partir do broker (posição
+    # aberta por fora do bot também conta), não do banco.
+    max_open_positions: int = Field(default=12, gt=0)
+
     # --- Repetição de sinal no mesmo símbolo (história 34) ------------------
     # Múltiplas posições no mesmo símbolo passam a ser permitidas — a trava
     # antiga de "uma posição por símbolo" saiu. Mas o sinal técnico persiste

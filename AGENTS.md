@@ -51,6 +51,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 41 — Estratégia 3MACD | ✅ |
 | 42 — Estratégia 2MACDSTO | ✅ |
 | 43 — Performance por estratégia no dashboard | ✅ |
+| 44 — Teto de posições simultâneas | ✅ |
 
 ---
 
@@ -424,6 +425,16 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   coincidem na prática porque o trade segue a direção do sinal, mas são conceitos diferentes; não
   unifiquei os dois nesta história para não alterar o significado de um campo que já existia desde
   a história 39.
+- **Teto de contagem é ortogonal a teto de exposição/margem — os dois convivem sem se substituir.**
+  A história 32 removeu exposição/risco por trade como bloqueio (só margem livre e teto fixo de
+  lotes por ordem limitam TAMANHO); a história 44 adiciona `MAX_OPEN_POSITIONS` como teto de
+  QUANTIDADE de posições simultâneas, checado em `_executar` via `len(client.get_positions())` (todo
+  o broker, não filtrado por símbolo — múltiplas estratégias em paralelo em vários pares multiplicam
+  aberturas por ciclo). Mesmo padrão de "contagem vem do broker, não do banco" já usado no cooldown
+  por leitura distinta (história 34): posição aberta por fora do bot ocupa slot igual. O gate entra
+  ANTES do cálculo de cooldown/volume/margem em `_executar` — mais barato (uma chamada já feita em
+  outros pontos do módulo) e mais correto (bloquear por teto de contagem não deveria depender de
+  passar primeiro pelo teste de cooldown daquele símbolo específico).
 
 ---
 

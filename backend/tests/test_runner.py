@@ -575,6 +575,56 @@ def test_executar_mesma_direcao_apos_cooldown_abre_nova_posicao(session: Session
     assert len(trades) == 2
 
 
+# -- história 44: teto de posições simultâneas --------------------------------
+
+
+def test_executar_bloqueia_no_teto_de_posicoes(session: Session) -> None:
+    """No teto, a ordem é bloqueada mesmo com risco/margem/cooldown ok."""
+    runner = _runner(max_open_positions=2)
+    terminal = FakeTerminal(
+        positions=(
+            _posicao_aberta("GBPUSD", tipo=0),
+            _posicao_aberta("AUDUSD", tipo=1),
+        )
+    )
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["teto_posicoes"]
+
+
+def test_executar_abaixo_do_teto_permite_ordem(session: Session) -> None:
+    """Abaixo do teto, a contagem de posições não interfere na execução."""
+    runner = _runner(max_open_positions=2)
+    terminal = FakeTerminal(positions=(_posicao_aberta("GBPUSD", tipo=0),))
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    assert len(session.execute(select(Trade)).scalars().all()) == 1
+
+
+def test_executar_posicao_externa_conta_para_o_teto(session: Session) -> None:
+    """Posição aberta por fora do bot (mesmo trade.symbol nunca visto no banco)
+    ocupa slot igual — a contagem vem do broker, não do banco de trades."""
+    runner = _runner(max_open_positions=1)
+    terminal = FakeTerminal(positions=(_posicao_aberta("USDJPY", tipo=0),))
+    client = _client(terminal)
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar("EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento)
+
+    assert session.execute(select(Trade)).scalars().all() == []
+    assert _motivos_bloqueio(session) == ["teto_posicoes"]
+
+
 # -- idempotência com granularidade de minuto (AC4) --------------------------
 
 
