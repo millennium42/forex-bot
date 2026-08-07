@@ -18,8 +18,14 @@ import pytest
 
 import backend.analysis.strategy as strategy_module
 from backend.analysis.strategy import (
+    BBRSI_RISK_PCT,
+    BBRSI_TP_COEF,
     STRATEGY_DIRECTION_THRESHOLD,
     STRATEGY_REGISTRY,
+    THREE_MACD_RISK_PCT,
+    THREE_MACD_TP_COEF,
+    TWO_MACD_STO_RISK_PCT,
+    TWO_MACD_STO_TP_COEF,
     BBRSIStrategy,
     TechnicalStrategy,
     ThreeMacdStrategy,
@@ -659,3 +665,168 @@ def test_build_enabled_strategies_2macdsto() -> None:
     assert len(estrategias) == 1
     assert estrategias[0].name == "2macdsto"
     assert isinstance(estrategias[0], TwoMacdStoStrategy)
+
+
+# -- RR por estratégia (TPCoef da fonte MQL5) --------------------------------
+#
+# `tp = in + TPCoef * MathAbs(in - sl)` no MQL5 original: TPCoef É o
+# risk-reward. Cada estratégia foi testada pelo autor com um valor próprio, e
+# o breakeven implicado (1/(1+RR)) muda a viabilidade de cada uma. Travar os
+# defaults em teste evita que um ajuste global de RR volte a achatar todas.
+
+
+def test_bbrsi_declara_tp_coef_da_fonte() -> None:
+    """BBRSI: TPCoef=1 na fonte -> RR 1.0, breakeven 50%."""
+    assert pytest.approx(1.0) == BBRSI_TP_COEF
+
+    strategy = BBRSIStrategy(bb_len=20, bb_dev=2.0, rsi_len=3, sl_coef=0.9)
+    resultado = strategy.evaluate(_candles_from_closes(_BUY_CLOSES))
+
+    assert resultado is not None
+    assert resultado.take_profit_rr == pytest.approx(BBRSI_TP_COEF)
+
+
+def test_bbrsi_tp_coef_configuravel() -> None:
+    strategy = BBRSIStrategy(bb_len=20, bb_dev=2.0, rsi_len=3, sl_coef=0.9, tp_coef=3.0)
+    resultado = strategy.evaluate(_candles_from_closes(_SELL_CLOSES))
+
+    assert resultado is not None
+    assert resultado.take_profit_rr == pytest.approx(3.0)
+
+
+def test_three_macd_declara_tp_coef_da_fonte(monkeypatch: pytest.MonkeyPatch) -> None:
+    """3MACD: TPCoef=2.0 na fonte -> RR 2.0, breakeven 33,3%.
+
+    É seguidora de tendência: erra a maioria das entradas e compensa nas que
+    pegam o movimento. Com o RR global de 0,333 precisaria de 75% de acerto,
+    contra os ~60% que uma trend follower entrega — estruturalmente perdedora.
+    """
+    assert pytest.approx(2.0) == THREE_MACD_TP_COEF
+
+    strategy = ThreeMacdStrategy(buff_size=_BUFF)
+    _patch_macd_series_por_slow(monkeypatch, strategy, _M1_BUY_P1, _M2_BUY_P1, _M3_BUY_P1)
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 200))
+
+    assert resultado is not None
+    assert resultado.take_profit_rr == pytest.approx(THREE_MACD_TP_COEF)
+
+
+def test_two_macd_sto_declara_tp_coef_da_fonte(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2MACDSTO: TPCoef=1.0 na fonte -> RR 1.0, breakeven 50%."""
+    assert pytest.approx(1.0) == TWO_MACD_STO_TP_COEF
+
+    strategy = TwoMacdStoStrategy(
+        m1_fast=2, m1_slow=3, m2_fast=3, m2_slow=5, sto_k_period=3, sto_slowing=2, sto_d_period=2
+    )
+    _patch_two_macd_sto(
+        monkeypatch,
+        strategy,
+        30,
+        {"_1": -0.5, "_2": _BUY_OK["m1_2"]},
+        {"_1": 0.5, "_2": _BUY_OK["m2_2"]},
+        {
+            "k_1": _BUY_OK["k_1"],
+            "d_1": _BUY_OK["d_1"],
+            "k_2": _BUY_OK["k_2"],
+            "d_2": _BUY_OK["d_2"],
+        },
+    )
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 30))
+
+    assert resultado is not None
+    assert resultado.take_profit_rr == pytest.approx(TWO_MACD_STO_TP_COEF)
+
+
+def test_technical_nao_declara_rr_proprio(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`technical` é estratégia própria, não portada: usa o RR global da config.
+
+    `take_profit_rr=None` é o sinal para o runner manter o alvo monetário
+    dinâmico da história 45 (take_profit_pct / max_loss_pct_per_trade).
+    """
+    monkeypatch.setattr(strategy_module, "compute_indicators", _indicadores_validos)
+    fake_score = TechnicalScore(score=0.8, confidence=0.8, components={"rsi": 0.8})
+    strategy = TechnicalStrategy(analyzer=_FakeAnalyzer(fake_score))  # type: ignore[arg-type]
+
+    resultado = strategy.evaluate(_candles(60))
+
+    assert resultado is not None
+    assert resultado.take_profit_rr is None
+
+
+# -- Risco por estratégia (Risk da fonte MQL5) -------------------------------
+#
+# `ea.risk = Risk * 0.01` na fonte: o input `Risk` é percentual do equity por
+# trade, e alimenta a mesma fórmula de volume do runner. Os três valores são
+# deliberadamente diferentes — a de tendência leva o MENOR tamanho apesar do
+# maior RR. Travar em teste evita que um ajuste global volte a igualá-los.
+
+
+def test_bbrsi_declara_risk_pct_da_fonte() -> None:
+    """BBRSI: Risk=1.0 na fonte -> 1% do equity por trade."""
+    assert pytest.approx(1.0) == BBRSI_RISK_PCT
+
+    strategy = BBRSIStrategy(bb_len=20, bb_dev=2.0, rsi_len=3, sl_coef=0.9)
+    resultado = strategy.evaluate(_candles_from_closes(_BUY_CLOSES))
+
+    assert resultado is not None
+    assert resultado.risk_pct == pytest.approx(BBRSI_RISK_PCT)
+
+
+def test_three_macd_declara_risk_pct_da_fonte(monkeypatch: pytest.MonkeyPatch) -> None:
+    """3MACD: Risk=0.5 -> o MENOR risco das três, apesar do maior RR."""
+    assert pytest.approx(0.5) == THREE_MACD_RISK_PCT
+
+    strategy = ThreeMacdStrategy(buff_size=_BUFF)
+    _patch_macd_series_por_slow(monkeypatch, strategy, _M1_BUY_P1, _M2_BUY_P1, _M3_BUY_P1)
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 200))
+
+    assert resultado is not None
+    assert resultado.risk_pct == pytest.approx(THREE_MACD_RISK_PCT)
+
+
+def test_two_macd_sto_declara_risk_pct_da_fonte(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2MACDSTO: Risk=2.25 -> o MAIOR risco das três, 4,5x o do 3MACD."""
+    assert pytest.approx(2.25) == TWO_MACD_STO_RISK_PCT
+
+    strategy = TwoMacdStoStrategy(
+        m1_fast=2, m1_slow=3, m2_fast=3, m2_slow=5, sto_k_period=3, sto_slowing=2, sto_d_period=2
+    )
+    _patch_two_macd_sto(
+        monkeypatch,
+        strategy,
+        30,
+        {"_1": -0.5, "_2": _BUY_OK["m1_2"]},
+        {"_1": 0.5, "_2": _BUY_OK["m2_2"]},
+        {
+            "k_1": _BUY_OK["k_1"],
+            "d_1": _BUY_OK["d_1"],
+            "k_2": _BUY_OK["k_2"],
+            "d_2": _BUY_OK["d_2"],
+        },
+    )
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 30))
+
+    assert resultado is not None
+    assert resultado.risk_pct == pytest.approx(TWO_MACD_STO_RISK_PCT)
+
+
+def test_hierarquia_de_risco_da_fonte() -> None:
+    """A fonte dá o MAIOR tamanho ao pullback e o MENOR à tendência.
+
+    Antes desta correção o bot fazia o oposto: 3MACD (a de menor expectância
+    observada) abria com 5 lotes enquanto `technical` abria com 2.
+    """
+    assert THREE_MACD_RISK_PCT < BBRSI_RISK_PCT < TWO_MACD_STO_RISK_PCT
+    assert pytest.approx(4.5 * THREE_MACD_RISK_PCT) == TWO_MACD_STO_RISK_PCT
+
+
+def test_technical_nao_declara_risco_proprio(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`technical` usa `max_loss_pct_per_trade` da config, não valor de fonte."""
+    monkeypatch.setattr(strategy_module, "compute_indicators", _indicadores_validos)
+    fake_score = TechnicalScore(score=0.8, confidence=0.8, components={"rsi": 0.8})
+    strategy = TechnicalStrategy(analyzer=_FakeAnalyzer(fake_score))  # type: ignore[arg-type]
+
+    resultado = strategy.evaluate(_candles(60))
+
+    assert resultado is not None
+    assert resultado.risk_pct is None

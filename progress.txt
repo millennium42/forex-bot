@@ -70,6 +70,17 @@
   minimo de qualquer estrategia baseada em MACD: `max(slow_periods) + profundidade_extra_usada`,
   nao so o tamanho do periodo mais lento isolado.
 
+- Parametro que a FONTE de uma estrategia portada define (RR, risco, stop) vira campo
+  opcional em `StrategySignal`, nao config global: `None` = usa o default da config,
+  valor = a estrategia manda. Mesmo padrao ja usado por `stop_loss` na historia 40. Config
+  global forcaria todas as estrategias ao mesmo numero, e o numero certo difere por
+  desenho (trend follower precisa de RR alto, scalp de RR baixo com win rate alto).
+- Teto que muda de dono continua checado no gate. Quando `volume_max_per_order_lots` deixou
+  de ser constante de config e virou calculo do runner (por confianca), a tentacao foi
+  remover a checagem do `risk_manager` por "redundante". Errado: `risk_manager` e o unico
+  caminho para uma ordem, entao um teto verificado so no chamador deixa de valer para
+  qualquer outra origem. O valor passou a viajar no `OrderRequest.max_volume` (simetrico ao
+  `min_volume` que ja existia) e a checagem ficou onde estava.
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
 
@@ -1086,3 +1097,51 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     `RiskValidationError` inalcançável já registrado como gap conhecido desde a história 21).
 ---
 Nenhuma historia concluida na iteracao 7. Parando para inspecao.
+
+## [2026-08-07] — RR, stop e volume por estratégia, extraídos da fonte MQL5
+- **Diagnóstico que motivou:** `/strategies/performance` com n=25 mostrou 3macd com 60% de win
+  rate, volume médio 5.0 lotes e P&L −$80, contra technical com 95%, volume 2.0 e +$164. O bot
+  apostava 2,5x mais na estratégia de pior expectância. Causa: estratégia binária devolve
+  `confidence=1.0`, que a fusão degrada para 0.7 (peso técnico, sentimento off) = exatamente os
+  70% que saturam o teto da curva de volume da história 46. Confiança binária significa "a regra
+  bateu", não "tenho edge" — usá-la como proxy de convicção é o inverso de Kelly.
+- **Fonte dos valores:** código-fonte real de geraked/metatrader5 (`Experts/*.mq5` +
+  `Include/EAUtils.mqh`), baixado com `Invoke-WebRequest` no raw do GitHub. Confirmado no código,
+  não inferido da descrição:
+  - `tp = in + TPCoef * MathAbs(in - sl)` -> **TPCoef É o risk-reward**.
+  - `ea.risk = Risk * 0.01` -> **o input `Risk` é percentual do equity por trade**.
+  - `vol = (balance * risk) / MathAbs(in - sl) * point / tv` -> mesma fórmula de
+    `_calcular_volume`; `point/tv` faz o papel do nosso `contract_size`.
+- **Valores aplicados** (antes: RR 0,333 e risco 0,1% para todas):
+
+  | estratégia | TPCoef (RR) | breakeven | Risk (% equity) |
+  |---|---|---|---|
+  | BBRSI      | 1.0 | 50,0% | 1,00 |
+  | 3MACD      | 2.0 | 33,3% | 0,50 |
+  | 2MACDSTO   | 1.0 | 50,0% | 2,25 |
+  | technical  | config (0,333) | 75% | config (0,1) |
+
+- **Por que o 3macd perdia, com a aritmética:** a 60% de acerto, `E = 0,6*0,333 − 0,4*1,0 =
+  −0,20R` (bate com os −$80 observados). No RR 2.0 da fonte, `E = 0,6*2,0 − 0,4*1,0 = +0,80R`.
+  Uma trend follower é desenhada para errar a maioria e compensar no tamanho do acerto; rodá-la
+  com alvo 6x menor que o projetado inverte a lógica dela.
+- **Literatura confere com a fonte** (buscas: risk-reward por tipo de estratégia): mean reversion
+  60-75% WR com RR 1:1 a 2:1 (BBRSI 1.0 = piso da faixa); trend following 30-40% WR exigindo
+  1:2 a 1:3+ (3MACD 2.0 = mínimo prescrito); pullback 55-65% WR com 1:1,5 a 2:1 — aqui a fonte
+  (1.0) fica ABAIXO da faixa. Mantido o valor da fonte por ser o efetivamente backtestado nesta
+  estratégia; `tp_coef` é configurável no construtor para calibrar com dado real depois.
+- **Aprendizados para as próximas iterações:**
+  - Ver os dois padrões novos em Codebase Patterns (override por estratégia via `StrategySignal`;
+    teto que muda de dono continua checado no gate).
+  - **AVISO DE AGREGAÇÃO, registrado no docstring de `THREE_MACD_RISK_PCT`:** os percentuais de
+    `Risk` da fonte pressupõem UM EA rodando sozinho. Este bot avalia N estratégias x M símbolos,
+    então o risco simultâneo é a SOMA dos slots. Com `MAX_OPEN_POSITIONS=12` e 2,25%, o pior caso
+    passa de 25% do equity — muito acima do kill switch de 5%, que só barra ordem NOVA e não
+    fecha posição aberta. Quem contém isso hoje é `MAX_OPEN_POSITIONS`, a margem livre e o teto
+    de lotes por ordem. Reduzir os percentuais se aumentar o número de slots.
+  - Portar parâmetro de EA exige ler o `Include/` além do `Experts/`: a semântica de `Risk`
+    (`* 0.01`) e a fórmula de volume estavam em `EAUtils.mqh`, não no arquivo da estratégia. Ler
+    só o `.mq5` teria feito `Risk=2.25` virar 225% do equity.
+  - Teste de proporcionalidade de volume precisa de valores que caiam EXATOS num múltiplo do
+    `volume_step`: com risco 0,25% e ATR 0,0040 o bruto dá 0,625, que arredonda para baixo em
+    0,62 e quebra a igualdade `2*v[0] == v[1]`. Calibrei o ATR (0,0050) para 0,5 e 1,0 lote.

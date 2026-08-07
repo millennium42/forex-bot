@@ -52,8 +52,10 @@ from backend.models.enums import Direction
 __all__ = [
     "BBRSI_BB_DEV",
     "BBRSI_BB_LEN",
+    "BBRSI_RISK_PCT",
     "BBRSI_RSI_LEN",
     "BBRSI_SL_COEF",
+    "BBRSI_TP_COEF",
     "STRATEGY_DIRECTION_THRESHOLD",
     "STRATEGY_REGISTRY",
     "THREE_MACD_BUFF_SIZE",
@@ -63,13 +65,17 @@ __all__ = [
     "THREE_MACD_M2_SLOW",
     "THREE_MACD_M3_FAST",
     "THREE_MACD_M3_SLOW",
+    "THREE_MACD_RISK_PCT",
+    "THREE_MACD_TP_COEF",
     "TWO_MACD_STO_D_PERIOD",
     "TWO_MACD_STO_K_PERIOD",
     "TWO_MACD_STO_M1_FAST",
     "TWO_MACD_STO_M1_SLOW",
     "TWO_MACD_STO_M2_FAST",
     "TWO_MACD_STO_M2_SLOW",
+    "TWO_MACD_STO_RISK_PCT",
     "TWO_MACD_STO_SLOWING",
+    "TWO_MACD_STO_TP_COEF",
     "BBRSIStrategy",
     "Strategy",
     "StrategySignal",
@@ -109,6 +115,23 @@ class StrategySignal:
     (ex.: `BBRSIStrategy`) que defina o próprio stop a partir da sua leitura —
     aqui, a banda de Bollinger — preenche este campo, e o runner usa esse
     valor em vez do ATR (história 40).
+
+    `take_profit_rr` segue a mesma lógica para o ALVO: `None` deixa o runner
+    usar o RR global derivado da config (`take_profit_pct` /
+    `max_loss_pct_per_trade`). Uma estratégia portada de uma fonte que define
+    o próprio `TPCoef` preenche este campo — é o coeficiente que multiplica a
+    distância do stop, exatamente como `tp = in + TPCoef * |in - sl|` no MQL5
+    original. Cada estratégia foi desenhada e testada pelo autor com um RR
+    específico; forçar todas ao mesmo RR global quebra a expectância de quem
+    acerta pouco e ganha muito (ver `THREE_MACD_TP_COEF`).
+
+    `risk_pct` é o percentual do equity arriscado por trade — o `Risk` da
+    fonte, que lá vira `ea.risk = Risk * 0.01` e alimenta
+    `vol = (balance * risk) / |in - sl| * point / tv`, a mesma fórmula de
+    `BotRunner._calcular_volume`. `None` usa `max_loss_pct_per_trade` da
+    config. O autor calibrou um valor por estratégia (0,5% na de tendência,
+    2,25% na de pullback) porque a frequência e a qualidade dos sinais
+    diferem — ver o AVISO de agregação em `THREE_MACD_RISK_PCT`.
     """
 
     direction: Direction
@@ -116,6 +139,8 @@ class StrategySignal:
     components: dict[str, float] = field(default_factory=dict)
     score: float = 0.0
     stop_loss: float | None = None
+    take_profit_rr: float | None = None
+    risk_pct: float | None = None
 
 
 class Strategy(Protocol):
@@ -161,6 +186,14 @@ BBRSI_BB_LEN = 500
 BBRSI_BB_DEV = 2.0
 BBRSI_RSI_LEN = 7
 BBRSI_SL_COEF = 0.9
+# `TPCoef = 1` na fonte: alvo à mesma distância do stop (RR 1.0), o que implica
+# 50% de win rate para breakeven. Reversão à média acerta com frequência mas o
+# movimento de volta à média é limitado — daí o alvo simétrico, não esticado.
+# A literatura de mean reversion (win rate 60-75%) recomenda RR 1:1 a 2:1;
+# 1.0 é o piso conservador dessa faixa.
+BBRSI_TP_COEF = 1.0
+# `Risk = 1.0` na fonte -> 1% do equity por trade (`ea.risk = Risk * 0.01`).
+BBRSI_RISK_PCT = 1.0
 _BBRSI_RSI_LOWER = 30.0
 _BBRSI_RSI_MIDDLE = 50.0
 _BBRSI_RSI_UPPER = 70.0
@@ -186,11 +219,15 @@ class BBRSIStrategy:
         bb_dev: float = BBRSI_BB_DEV,
         rsi_len: int = BBRSI_RSI_LEN,
         sl_coef: float = BBRSI_SL_COEF,
+        tp_coef: float = BBRSI_TP_COEF,
+        risk_pct: float = BBRSI_RISK_PCT,
     ) -> None:
         self._bb_len = bb_len
         self._bb_dev = bb_dev
         self._rsi_len = rsi_len
         self._sl_coef = sl_coef
+        self._tp_coef = tp_coef
+        self._risk_pct = risk_pct
 
     def evaluate(self, candles: pd.DataFrame) -> StrategySignal | None:
         close = candles["close"].astype(float)
@@ -251,6 +288,8 @@ class BBRSIStrategy:
                 components=componentes,
                 score=1.0,
                 stop_loss=stop_loss,
+                take_profit_rr=self._tp_coef,
+                risk_pct=self._risk_pct,
             )
 
         venda = (
@@ -269,6 +308,8 @@ class BBRSIStrategy:
                 components=componentes,
                 score=-1.0,
                 stop_loss=stop_loss,
+                take_profit_rr=self._tp_coef,
+                risk_pct=self._risk_pct,
             )
 
         return StrategySignal(
@@ -285,6 +326,28 @@ THREE_MACD_M2_SLOW = 21
 THREE_MACD_M3_FAST = 34
 THREE_MACD_M3_SLOW = 144
 THREE_MACD_BUFF_SIZE = 32
+# `TPCoef = 2.0` na fonte: alvo ao DOBRO da distância do stop (RR 2.0), que
+# implica apenas 33,3% de win rate para breakeven. É seguidora de tendência —
+# desenhada para errar a maioria das entradas e compensar nas que pegam o
+# movimento. Rodar esta estratégia com RR baixo inverte a lógica dela: com o
+# RR global de 0,333 ela precisaria de 75% de acerto, contra os ~60% que uma
+# trend follower entrega por natureza.
+# A literatura de trend following (win rate 30-40%) prescreve RR 1:2 a 1:3+;
+# 2.0 é exatamente o mínimo dessa faixa.
+THREE_MACD_TP_COEF = 2.0
+# `Risk = 0.5` na fonte -> 0,5% do equity por trade. É o MENOR risco das três,
+# apesar de ser a estratégia de maior RR: o autor compensa a baixa taxa de
+# acerto da tendência com tamanho menor, não maior.
+#
+# AVISO DE AGREGAÇÃO: estes percentuais vêm de EAs que rodam UM por vez. Este
+# bot avalia N estratégias x M símbolos por ciclo, então o risco simultâneo é
+# a SOMA dos slots abertos, não o valor de uma linha. Com `MAX_OPEN_POSITIONS`
+# em 12 e o maior valor da tabela (2,25%), o pior caso agregado passa de 25%
+# do equity — muito acima do kill switch diário de 5%, que só barra ordem
+# nova e não fecha posição já aberta. Os limites que efetivamente contêm isso
+# hoje são `MAX_OPEN_POSITIONS`, a margem livre do broker e o teto de lotes
+# por ordem. Reduza estes percentuais se aumentar o número de slots.
+THREE_MACD_RISK_PCT = 0.5
 
 
 def _macd_series(close: pd.Series, fast: int, slow: int, buff_size: int) -> list[float]:
@@ -445,6 +508,8 @@ class ThreeMacdStrategy:
         m3_fast: int = THREE_MACD_M3_FAST,
         m3_slow: int = THREE_MACD_M3_SLOW,
         buff_size: int = THREE_MACD_BUFF_SIZE,
+        tp_coef: float = THREE_MACD_TP_COEF,
+        risk_pct: float = THREE_MACD_RISK_PCT,
     ) -> None:
         self._m1_fast = m1_fast
         self._m1_slow = m1_slow
@@ -453,6 +518,8 @@ class ThreeMacdStrategy:
         self._m3_fast = m3_fast
         self._m3_slow = m3_slow
         self._buff_size = buff_size
+        self._tp_coef = tp_coef
+        self._risk_pct = risk_pct
 
     def evaluate(self, candles: pd.DataFrame) -> StrategySignal | None:
         close = candles["close"].astype(float)
@@ -477,11 +544,21 @@ class ThreeMacdStrategy:
 
         if _three_macd_buy(m1, m2, m3, self._buff_size):
             return StrategySignal(
-                direction=Direction.BUY, confidence=1.0, components=componentes, score=1.0
+                direction=Direction.BUY,
+                confidence=1.0,
+                components=componentes,
+                score=1.0,
+                take_profit_rr=self._tp_coef,
+                risk_pct=self._risk_pct,
             )
         if _three_macd_sell(m1, m2, m3, self._buff_size):
             return StrategySignal(
-                direction=Direction.SELL, confidence=1.0, components=componentes, score=-1.0
+                direction=Direction.SELL,
+                confidence=1.0,
+                components=componentes,
+                score=-1.0,
+                take_profit_rr=self._tp_coef,
+                risk_pct=self._risk_pct,
             )
         return StrategySignal(
             direction=Direction.HOLD, confidence=0.0, components=componentes, score=0.0
@@ -497,6 +574,18 @@ TWO_MACD_STO_M2_SLOW = 144
 TWO_MACD_STO_K_PERIOD = 7
 TWO_MACD_STO_SLOWING = 3
 TWO_MACD_STO_D_PERIOD = 3
+# `TPCoef = 1.0` na fonte: alvo simétrico ao stop (RR 1.0), breakeven em 50%.
+# É reversão DENTRO de uma tendência: pega o repique contra o movimento maior,
+# que por definição tem fôlego curto — alvo esticado não seria alcançado.
+# A literatura de pullback (win rate 55-65%) sugere RR 1:1,5 a 2:1 — a fonte
+# usa 1.0, abaixo dessa faixa. Mantido o valor da fonte por ser o efetivamente
+# backtestado NESTA estratégia; o parâmetro é configurável para calibrar com
+# dado real quando houver amostra suficiente.
+TWO_MACD_STO_TP_COEF = 1.0
+# `Risk = 2.25` na fonte -> 2,25% do equity por trade, o MAIOR das três (4,5x
+# o do 3MACD). Ver o AVISO DE AGREGAÇÃO em `THREE_MACD_RISK_PCT`: este é o
+# valor que domina o pior caso quando vários slots abrem ao mesmo tempo.
+TWO_MACD_STO_RISK_PCT = 2.25
 _TWO_MACD_STO_K_LOWER = 20.0
 _TWO_MACD_STO_K_UPPER = 80.0
 
@@ -565,6 +654,8 @@ class TwoMacdStoStrategy:
         sto_k_period: int = TWO_MACD_STO_K_PERIOD,
         sto_slowing: int = TWO_MACD_STO_SLOWING,
         sto_d_period: int = TWO_MACD_STO_D_PERIOD,
+        tp_coef: float = TWO_MACD_STO_TP_COEF,
+        risk_pct: float = TWO_MACD_STO_RISK_PCT,
     ) -> None:
         self._m1_fast = m1_fast
         self._m1_slow = m1_slow
@@ -573,6 +664,8 @@ class TwoMacdStoStrategy:
         self._sto_k_period = sto_k_period
         self._sto_slowing = sto_slowing
         self._sto_d_period = sto_d_period
+        self._tp_coef = tp_coef
+        self._risk_pct = risk_pct
 
     def evaluate(self, candles: pd.DataFrame) -> StrategySignal | None:
         high = candles["high"].astype(float)
@@ -612,11 +705,21 @@ class TwoMacdStoStrategy:
 
         if _two_macd_sto_buy(m1_2, m2_2, k_1, k_2, d_1, d_2):
             return StrategySignal(
-                direction=Direction.BUY, confidence=1.0, components=componentes, score=1.0
+                direction=Direction.BUY,
+                confidence=1.0,
+                components=componentes,
+                score=1.0,
+                take_profit_rr=self._tp_coef,
+                risk_pct=self._risk_pct,
             )
         if _two_macd_sto_sell(m1_2, m2_2, k_1, k_2, d_1, d_2):
             return StrategySignal(
-                direction=Direction.SELL, confidence=1.0, components=componentes, score=-1.0
+                direction=Direction.SELL,
+                confidence=1.0,
+                components=componentes,
+                score=-1.0,
+                take_profit_rr=self._tp_coef,
+                risk_pct=self._risk_pct,
             )
         return StrategySignal(
             direction=Direction.HOLD, confidence=0.0, components=componentes, score=0.0

@@ -216,6 +216,7 @@ def test_risk_manager_rejects_volume_above_max_per_order(
         price=valid_request.price,
         stop_loss=valid_request.stop_loss,
         take_profit=valid_request.take_profit,
+        max_volume=2.0,
     )
     with pytest.raises(RiskValidationError, match=r"excede o teto de 2\.0 lotes por ordem"):
         risk_manager.validate_order(
@@ -235,6 +236,7 @@ def test_risk_manager_accepts_volume_exactly_at_max_per_order(
         price=valid_request.price,
         stop_loss=valid_request.stop_loss,
         take_profit=valid_request.take_profit,
+        max_volume=2.0,
     )
     risk_manager.validate_order(
         request=req,
@@ -247,7 +249,11 @@ def test_risk_manager_accepts_volume_exactly_at_max_per_order(
 def test_risk_manager_respects_configured_volume_max_per_order(
     risk_manager: RiskManager, valid_request: OrderRequest
 ) -> None:
-    risk_manager.settings.volume_max_per_order_lots = 0.5
+    """O teto vem no `OrderRequest`, não mais da config (história 46).
+
+    Deixou de ser constante porque passou a variar com a confiança do sinal;
+    quem calcula é o runner, mas a checagem continua no gate.
+    """
     req = OrderRequest(
         symbol=valid_request.symbol,
         side=valid_request.side,
@@ -255,6 +261,7 @@ def test_risk_manager_respects_configured_volume_max_per_order(
         price=valid_request.price,
         stop_loss=valid_request.stop_loss,
         take_profit=valid_request.take_profit,
+        max_volume=0.5,
     )
     with pytest.raises(RiskValidationError, match=r"excede o teto de 0\.5 lotes por ordem"):
         risk_manager.validate_order(
@@ -262,3 +269,23 @@ def test_risk_manager_respects_configured_volume_max_per_order(
             equity=1_000_000.0,
             daily_loss=0.0,
         )
+
+
+def test_risk_manager_sem_max_volume_nao_bloqueia(
+    risk_manager: RiskManager, valid_request: OrderRequest
+) -> None:
+    """`max_volume=None` pula a checagem — mesma regra de `min_volume`.
+
+    Origem de ordem que não conhece o teto não pode ser rejeitada por um
+    valor que ninguém informou.
+    """
+    req = OrderRequest(
+        symbol=valid_request.symbol,
+        side=valid_request.side,
+        volume=50.0,
+        price=valid_request.price,
+        stop_loss=valid_request.stop_loss,
+        take_profit=valid_request.take_profit,
+        max_volume=None,
+    )
+    risk_manager.validate_order(request=req, equity=1_000_000.0, daily_loss=0.0)

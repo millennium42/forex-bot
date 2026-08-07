@@ -298,7 +298,7 @@ def test_strategy_performance_empty_by_default(client: TestClient) -> None:
     assert resp.status_code == 200
     body = {row["strategy"]: row for row in resp.json()}
     assert len(body) == 4
-    
+
     assert body["technical"]["trades"] == 0
     assert body["technical"]["win_rate"] is None
     assert body["technical"]["net_pnl"] is None

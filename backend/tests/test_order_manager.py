@@ -154,12 +154,12 @@ def test_place_order_idempotent(session: Session, order_manager: OrderManager) -
 
 
 def test_place_order_risk_rejected(session: Session, order_manager: OrderManager) -> None:
-    """Volume acima do teto de tamanho (história 32) é o motivo de rejeição aqui.
+    """Volume acima do teto de tamanho é o motivo de rejeição aqui.
 
-    Risco por trade e exposição agregada não bloqueiam mais ordem — o único
-    teto de tamanho que resta em `risk_manager` é `volume_max_per_order_lots`
-    (default 2.0), então um volume de 10.0 é o jeito de exercitar o caminho de
-    rejeição sem depender de parâmetros removidos.
+    Risco por trade e exposição agregada não bloqueiam mais ordem (história
+    32). O teto que resta é `OrderRequest.max_volume`, calculado pelo runner a
+    partir da confiança do sinal (história 46) e validado no gate — um volume
+    de 10.0 contra um teto de 2.0 exercita esse caminho.
     """
     # O instrumento precisa existir: desde a história 32 a rejeição também
     # grava um `Trade` com status REJECTED, e ele referencia `instrument_id`.
@@ -174,6 +174,7 @@ def test_place_order_risk_rejected(session: Session, order_manager: OrderManager
         price=1.1,
         stop_loss=1.0,
         take_profit=1.2,
+        max_volume=2.0,
     )
 
     trade = order_manager.place_order(req, "test_rej", instrument.id, 10000.0, 0.0)

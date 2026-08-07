@@ -324,6 +324,8 @@ class BotRunner:
             signal.id,
             strategy_name,
             resultado.stop_loss,
+            resultado.take_profit_rr,
+            resultado.risk_pct,
         )
 
     def _registrar_signal(
@@ -417,6 +419,8 @@ class BotRunner:
         signal_id: int | None = None,
         strategy: str = "technical",
         stop_loss_override: float | None = None,
+        take_profit_rr_override: float | None = None,
+        risk_pct_override: float | None = None,
     ) -> None:
         if stop_loss_override is None and atr <= 0:
             # ATR zero significa volatilidade não medida. Sem ela não há stop
@@ -458,16 +462,23 @@ class BotRunner:
             distancia_sl = atr * self.settings.atr_sl_multiplier
             stop_loss = entry - distancia_sl if side is Side.BUY else entry + distancia_sl
 
-        # História 45: alvo monetário dinâmico baseado em % do equity.
-        # O stop distance continua do ATR; o TP é posicionado para valer
-        # exatamente o ganho em % do equity, independente da distância do SL.
-        take_profit_usd = account.equity * (self.settings.take_profit_pct / 100.0)
-        # TP em pontos = ganho USD / (volume * contract_size). Mas como ainda não
-        # temos volume neste ponto, usamos a razão take_profit/loss para estimar:
-        # RR = take_profit_usd / loss_usd.
-        loss_usd = account.equity * (self.settings.max_loss_pct_per_trade / 100.0)
-        rr_dinamico = take_profit_usd / loss_usd if loss_usd > 0 else self.settings.take_profit_rr
-        distancia_tp = distancia_sl * rr_dinamico
+        if take_profit_rr_override is not None:
+            # A estratégia declara o próprio RR (`TPCoef` da fonte MQL5): cada
+            # uma foi desenhada e testada com um alvo específico. Uma seguidora
+            # de tendência (3MACD, TPCoef 2.0) erra a maioria das entradas e
+            # compensa nas que pegam o movimento — forçá-la ao RR global de
+            # 0,333 exigiria 75% de acerto contra os ~60% que ela entrega por
+            # natureza, tornando-a estruturalmente perdedora.
+            rr = take_profit_rr_override
+        else:
+            # História 45: alvo monetário dinâmico baseado em % do equity.
+            # O stop distance continua do ATR; o TP é posicionado para valer
+            # exatamente o ganho em % do equity, independente da distância do SL.
+            take_profit_usd = account.equity * (self.settings.take_profit_pct / 100.0)
+            loss_usd = account.equity * (self.settings.max_loss_pct_per_trade / 100.0)
+            rr = take_profit_usd / loss_usd if loss_usd > 0 else self.settings.take_profit_rr
+
+        distancia_tp = distancia_sl * rr
         take_profit = entry + distancia_tp if side is Side.BUY else entry - distancia_tp
 
         if stop_loss <= 0 or distancia_sl <= 0:
@@ -477,13 +488,17 @@ class BotRunner:
             )
             return
 
-        # História 45: volume derivado do alvo de perda em % do equity, não do
-        # risco por trade (que era usado em história 30). Esses dois campos podem
-        # divergir: max_loss_pct_per_trade para o cálculo de volume,
-        # max_risk_per_trade_pct permanece em config para histórias futuras.
-        volume = self._calcular_volume(
-            account.equity, distancia_sl, instrument, self.settings.max_loss_pct_per_trade
+        # Risco por trade: a estratégia tem precedência sobre a config global.
+        # O `Risk` da fonte MQL5 é calibrado por estratégia — 0,5% na de
+        # tendência, 2,25% na de pullback — porque a frequência e a qualidade
+        # dos sinais diferem. `None` cai no `max_loss_pct_per_trade` da config
+        # (história 45), que é o caminho de `technical`.
+        risco_pct = (
+            risk_pct_override
+            if risk_pct_override is not None
+            else self.settings.max_loss_pct_per_trade
         )
+        volume = self._calcular_volume(account.equity, distancia_sl, instrument, risco_pct)
         if volume is None:
             logger.info(
                 "runner.risco_nao_cobre_lote_minimo",
@@ -531,6 +546,7 @@ class BotRunner:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 min_volume=instrument.min_volume,
+                max_volume=volume_max_dinamico,
             ),
             client_request_id=self._client_request_id(symbol, side, strategy),
             instrument_id=instrument.id,

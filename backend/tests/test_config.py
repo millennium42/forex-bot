@@ -73,8 +73,6 @@ def test_folga_de_margem_e_validada() -> None:
         _settings(margin_free_buffer_pct=101)
 
 
-
-
 def test_listas_derivadas_de_env() -> None:
     s = _settings(news_rss_feeds="a, b ,,c", twitter_cashtags="$EURUSD, $GBPUSD")
     assert s.rss_feed_list == ["a", "b", "c"]

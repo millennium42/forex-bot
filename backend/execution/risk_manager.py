@@ -26,6 +26,13 @@ class OrderRequest:
     # quando a origem da ordem não o conhece — nesse caso a checagem é pulada,
     # nunca vira rejeição por um valor que ninguém informou.
     min_volume: float | None = None
+    # Teto de tamanho desta ordem específica. Deixou de ser constante de config
+    # (história 32) e passou a ser dinâmico por confiança do sinal (história
+    # 46), então quem calcula é o runner — mas a checagem continua aqui, no
+    # gate: `risk_manager` é o único caminho para uma ordem, e um teto que só
+    # existe no chamador não é um teto. `None` pula a checagem, mesma regra de
+    # `min_volume`.
+    max_volume: float | None = None
 
 
 class RiskManager:
@@ -85,10 +92,15 @@ class RiskManager:
                 f"Volume {request.volume} abaixo do mínimo do broker de {request.min_volume}"
             )
 
-        # 3. Teto dinâmico de tamanho por ordem (história 46)
+        # 3. Teto de tamanho por ordem
         #
-        # História 32 introduziu teto fixo (2.0). História 46 torna dinâmico:
-        # o teto varia logaritmicamente com a confiança do sinal (10%→2.0, 70%→5.0).
-        # O runner já aplica esse teto antes de chamar o risk_manager, então esta
-        # checagem é redundante — removida. Kill switch de perda diária e drawdown
-        # continuam protegendo a conta.
+        # História 32 introduziu um teto fixo em config; história 46 o tornou
+        # dinâmico (varia com a confiança do sinal: 10% -> 2.0, 70% -> 5.0
+        # lotes). Quem calcula o valor passou a ser o runner, mas a checagem
+        # permanece aqui: `risk_manager` é o único caminho para uma ordem, e
+        # um teto verificado só no chamador deixaria de valer para qualquer
+        # outra origem de ordem.
+        if request.max_volume is not None and request.volume > request.max_volume:
+            raise RiskValidationError(
+                f"Volume {request.volume} excede o teto de {request.max_volume} lotes por ordem"
+            )

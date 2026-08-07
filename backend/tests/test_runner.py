@@ -597,9 +597,6 @@ def test_executar_mesma_direcao_apos_cooldown_abre_nova_posicao(session: Session
 # -- história 44: teto de posições simultâneas --------------------------------
 
 
-
-
-
 # -- idempotência com granularidade de minuto (AC4) --------------------------
 
 
@@ -1245,3 +1242,129 @@ def test_registrar_bloqueio_estrategias_diferentes_nao_sao_deduplicadas(session:
 def test_botrunner_falha_no_boot_com_estrategia_desconhecida() -> None:
     with pytest.raises(ValueError, match="estrategia desconhecida"):
         _runner(strategies_enabled="inexistente")
+
+
+# -- RR por estratégia (TPCoef da fonte) -------------------------------------
+
+
+def test_executar_usa_rr_da_estrategia_quando_declarado(session: Session) -> None:
+    """O RR da estratégia tem precedência sobre o global da config.
+
+    3MACD declara `TPCoef=2.0` na fonte: alvo ao dobro da distância do stop,
+    breakeven 33,3%. Sem esta precedência ela roda no RR global de 0,333
+    (breakeven 75%) e vira estruturalmente perdedora — o dado real mostrou
+    60% de acerto e P&L negativo antes desta correção.
+    """
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0010
+    runner._executar(
+        "EURUSD",
+        BUY_SIGNAL,
+        atr,
+        client,
+        session,
+        order_manager,
+        instrumento,
+        take_profit_rr_override=2.0,
+    )
+
+    trade = session.execute(select(Trade)).scalars().one()
+    entrada = client.get_tick("EURUSD").ask
+    distancia_sl = atr * runner.settings.atr_sl_multiplier
+    assert trade.take_profit == pytest.approx(entrada + distancia_sl * 2.0)
+
+
+def test_executar_sem_rr_da_estrategia_usa_o_global(session: Session) -> None:
+    """`take_profit_rr=None` mantém o alvo monetário dinâmico da história 45."""
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0010
+    runner._executar(
+        "EURUSD",
+        BUY_SIGNAL,
+        atr,
+        client,
+        session,
+        order_manager,
+        instrumento,
+        take_profit_rr_override=None,
+    )
+
+    trade = session.execute(select(Trade)).scalars().one()
+    entrada = client.get_tick("EURUSD").ask
+    distancia_sl = atr * runner.settings.atr_sl_multiplier
+    rr_global = runner.settings.take_profit_pct / runner.settings.max_loss_pct_per_trade
+    assert trade.take_profit == pytest.approx(entrada + distancia_sl * rr_global)
+
+
+def test_executar_usa_risco_da_estrategia_quando_declarado(session: Session) -> None:
+    """O `Risk` da estratégia tem precedência sobre `max_loss_pct_per_trade`.
+
+    2MACDSTO declara 2,25% na fonte contra os 0,1% da config: o volume tem que
+    refletir o risco da estratégia, não o global.
+    """
+    runner = _runner()
+    client = _client()
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    atr = 0.0040
+    runner._executar(
+        "EURUSD",
+        BUY_SIGNAL,
+        atr,
+        client,
+        session,
+        order_manager,
+        instrumento,
+        risk_pct_override=0.5,
+    )
+
+    trade = session.execute(select(Trade)).scalars().one()
+    distancia_sl = atr * runner.settings.atr_sl_multiplier
+    esperado = (100_000.0 * 0.5 / 100.0) / (distancia_sl * instrumento.contract_size)
+    # Teto dinâmico por confiança (história 46) não deve interferir neste caso.
+    assert esperado <= runner._volume_max_por_confianca(BUY_SIGNAL.confidence * 100)
+    assert trade.volume == pytest.approx(esperado)
+
+
+def test_executar_risco_maior_gera_volume_maior(session: Session) -> None:
+    """Proporcionalidade: dobrar o risco da estratégia dobra o volume.
+
+    ATR escolhido para que os dois volumes caiam exatos num múltiplo do
+    `volume_step` do broker (0,5 e 1,0 lote): o arredondamento PARA BAIXO no
+    passo é deliberado (nunca infla o risco), mas quebraria a igualdade exata
+    da proporção se o valor bruto caísse no meio de um passo.
+    """
+    atr = 0.0050
+    volumes: list[float] = []
+
+    for risco in (0.25, 0.5):
+        runner = _runner()
+        client = _client()
+        order_manager = OrderManager(client, session, RiskManager(runner.settings))
+        instrumento = _instrumento(session, client)
+        runner._executar(
+            "EURUSD",
+            BUY_SIGNAL,
+            atr,
+            client,
+            session,
+            order_manager,
+            instrumento,
+            risk_pct_override=risco,
+        )
+        trade = session.execute(select(Trade).order_by(Trade.id.desc())).scalars().first()
+        assert trade is not None
+        volumes.append(trade.volume)
+        session.query(Trade).delete()
+        session.commit()
+
+    assert volumes[1] == pytest.approx(2 * volumes[0])
