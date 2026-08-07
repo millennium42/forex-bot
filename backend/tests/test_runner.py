@@ -1215,4 +1215,4 @@ def test_registrar_bloqueio_estrategias_diferentes_nao_sao_deduplicadas(session:
 
 def test_botrunner_falha_no_boot_com_estrategia_desconhecida() -> None:
     with pytest.raises(ValueError, match="estrategia desconhecida"):
-        _runner(strategies_enabled="3macd")
+        _runner(strategies_enabled="inexistente")

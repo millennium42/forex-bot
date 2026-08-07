@@ -510,7 +510,7 @@
         "serie sem barras suficientes para o MACD(34,144) devolve None",
         "teste com serie de tendencia de alta, de baixa e lateral"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 42,

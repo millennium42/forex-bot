@@ -58,6 +58,17 @@
   `momento if momento.tzinfo is not None else momento.replace(tzinfo=UTC)` (padrao ja existente em
   `outcome_recorder._utc`) sempre que o valor for usado em aritmetica Python, nao so em filtro
   `WHERE` (que roda no SQL e nao sofre o problema).
+- Portar uma estrategia de `geraked/metatrader5`: buscar o `.mq5` via `curl -sL
+  raw.githubusercontent.com/...`, nunca via WebFetch (que resume/reescreve codigo-fonte com um
+  modelo pequeno, perdendo precisao nos limites de loop e sinais de comparacao). Estrategia de
+  condicao de barra unica (BBRSI) e testavel com serie de preco real calibrada a mao; estrategia
+  de maquina de estado sobre janela (3MACD: varre ate BuffSize barras por cruzamento+topo/fundo)
+  nao e - testar a funcao de varredura direto com arrays MQL5 sinteticos (`m[i]` = `close.iloc[-i]`,
+  indice 0 nao lido) e a `evaluate()` via monkeypatch do helper de calculo do indicador.
+- `ta.trend.MACD(...).macd()` tem NaN de aquecimento ate o candle `window_slow`-esimo
+  (`_ema` da lib usa `min_periods=window` quando `fillna=False`, o default). Gate de comprimento
+  minimo de qualquer estrategia baseada em MACD: `max(slow_periods) + profundidade_extra_usada`,
+  nao so o tamanho do periodo mais lento isolado.
 
 ---
 ## Aprendizados (append-only — nunca editar linha anterior)
@@ -925,4 +936,48 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     linhas por causa da mudança de terminador, mesmo alterando 1 campo. O arquivo é CRLF — usar
     `Edit` (troca de string pontual) para marcar `"passes": true`, nunca reserializar o JSON
     inteiro.
+---
+
+## [2026-08-06] — História 41: Estratégia 3MACD
+- `backend/analysis/strategy.py`: nova classe `ThreeMacdStrategy` (`name="3macd"`) — porta fiel de
+  `3MACD.mq5` do repositório [geraked/metatrader5](https://github.com/geraked/metatrader5), três
+  MACDs simultâneos com defaults `(5,8)`, `(13,21)`, `(34,144)`. Duas funções module-level novas,
+  `_three_macd_buy`/`_three_macd_sell`, são a tradução literal de `BuySignal()`/`SellSignal()` da
+  fonte: cada uma varre até `BuffSize` (default 32) barras à procura de, em sequência, um
+  cruzamento de zero do MACD rápido e um topo/fundo do MACD médio — dois caminhos (pathways)
+  alternativos, ambos portados. `_macd_series` converte a linha principal do MACD (`ta.trend.MACD`)
+  para a convenção de índice MQL5 (`serie[i]` = `close.iloc[-i]`, índice 0 não lido). Sinal binário
+  (score ±1.0/confiança 1.0 ou HOLD), sem stop próprio — `stop_loss` fica `None`, o runner usa o
+  ATR global (comportamento padrão, diferente do BBRSI que define o próprio stop).
+- Registrado em `STRATEGY_REGISTRY["3macd"]`. Dois testes existentes usavam `"3macd"` como exemplo
+  de nome de estratégia desconhecida (`test_strategy.py::test_build_enabled_strategies_nome_desconhecido_falha`,
+  `test_runner.py::test_botrunner_falha_no_boot_com_estrategia_desconhecida`) — trocados para
+  `"inexistente"`, já que `"3macd"` virou nome válido nesta história (gotcha já registrado em
+  AGENTS.md desde a história 40, se confirmou de novo).
+- Arquivos alterados: `backend/analysis/strategy.py`, `backend/tests/test_strategy.py` (16 testes
+  novos), `backend/tests/test_runner.py` (1 linha), `prd.json` (`passes: true` na história 41).
+- **Aprendizados para as próximas iterações:**
+  - Buscar o `.mq5` via `curl -sL raw.githubusercontent.com/...`, não via `WebFetch` — o `WebFetch`
+    passa o conteúdo por um modelo pequeno antes de devolver, e para código-fonte inteiro isso
+    resume/reescreve a lógica e perde precisão exatamente nos limites de loop e sinais de
+    comparação que importam para portar uma condição de trading bar a bar. `curl` devolve o
+    arquivo exato.
+  - `ta.trend.MACD(...).macd()` tem NaN de aquecimento: `_ema` da lib usa
+    `min_periods=window_slow` quando `fillna=False` (default). O MACD só é não-NaN a partir do
+    candle `window_slow`-ésimo — o gate de comprimento mínimo de uma estratégia baseada em MACD
+    precisa ser `max(slow_periods) + profundidade_da_varredura`, não só o tamanho do buffer.
+  - `ThreeMacdStrategy` é uma máquina de estado sobre janela, não uma condição de barra única como
+    `BBRSIStrategy` — não dá para calibrar uma série de preço real à mão até bater a formação
+    exata (cruzamento + topo/fundo dentro do mesmo `BuffSize`). Testado em duas camadas: (1)
+    `_three_macd_buy`/`_three_macd_sell` chamadas direto com arrays MQL5 construídos à mão
+    (determinístico, valida a máquina de estado em si — inclusive os `return False` de cada loop
+    isoladamente, não só o caminho feliz); (2) `ThreeMacdStrategy.evaluate()` testado via
+    monkeypatch de `strategy_module._macd_series` (função module-level, dispatch por `slow`
+    period), mais um teste com preço real (série plana) só para exercitar a chamada de verdade ao
+    `ta.trend.MACD`. Ver padrão novo em Codebase Patterns.
+  - Coverage do módulo caiu para 79% logo após a implementação (dois caminhos alternativos × dois
+    lados × múltiplos `return False` internos = muita superfície de branch não coberta pelo
+    caminho feliz). Subiu para 91% com ~5 testes adicionais visando especificamente os `return
+    False` de cada loop — vale a pena mirar coverage por linha (`--cov-report=term-missing`) para
+    saber exatamente quais branches faltam em vez de adivinhar.
 ---

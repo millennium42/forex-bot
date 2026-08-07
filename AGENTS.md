@@ -48,6 +48,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 38 — Perfil de lançamento: 33s, 4 pares, sem sentimento | ✅ |
 | 39 — Arquitetura de estratégias paralelas | ✅ |
 | 40 — Estratégia BBRSI | ✅ |
+| 41 — Estratégia 3MACD | ✅ |
 
 ---
 
@@ -360,7 +361,33 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   justamente que série curta devolva `None`, não sinal forjado), mas registrar aqui: habilitar
   `"bbrsi"` em `STRATEGIES_ENABLED` sem também aumentar `CANDLES_POR_CICLO` deixa a estratégia
   sempre em `None` — decisão de configuração do operador, não bug, mas fácil de não perceber sem
-  este registro.
+  este registro. O mesmo vale para `"3macd"` com os defaults reais (MACD(34,144) + BuffSize=32
+  exige pelo menos 176 candles).
+- **Estratégia de máquina de estado sobre janela (3MACD, história 41) não é testável por fixture
+  de preço real como BBRSI — é preciso testar a função de varredura direto com arrays MQL5
+  sintéticos.** `BBRSIStrategy` é condição de barra única (dá para calibrar closes reais até bater
+  as seis condições); `ThreeMacdStrategy` varre até `BuffSize` barras procurando, em sequência, um
+  cruzamento de zero e um topo/fundo — construir uma série de preço real que caia exatamente nessa
+  janela é intratável à mão. Solução: `_three_macd_buy`/`_three_macd_sell` (funções module-level,
+  não métodos) recebem os arrays MQL5 já prontos (`m[i]` = `close.iloc[-i]`, índice 0 não lido) e
+  são testadas direto com arrays construídos à mão — isola a máquina de estado da computação real
+  do MACD. `ThreeMacdStrategy.evaluate()` em si é testado via monkeypatch de `_macd_series`
+  (módulo, não instância) dispatchando por `slow` period, mais um teste com preço real (série
+  plana) só para exercitar a chamada de verdade a `_macd_series`/`ta.trend.MACD`. Padrão a seguir
+  em 2MACDSTO (história 42) se a fonte também for uma varredura multi-barra em vez de condição de
+  barra única.
+- **`ta.trend.MACD(...).macd()` tem NaN de aquecimento (`ewm(min_periods=window)`), diferente do
+  que a leitura rápida do código sugere.** `_ema` da lib `ta` usa `min_periods = window if not
+  fillna else 0`; com `fillna=False` (default, usado aqui) a linha MACD só deixa de ser NaN a
+  partir do candle `window_slow`-ésimo — não é "sempre calculável desde o primeiro candle" como um
+  EMA ingênuo seria. O gate de comprimento mínimo de uma estratégia baseada em MACD precisa contar
+  com isso (`max(slow_periods) + profundidade_da_varredura`), não só com o tamanho do buffer de
+  varredura.
+- **Buscar o `.mq5` real via `raw.githubusercontent.com` (curl/Bash), não via `WebFetch`.**
+  `WebFetch` processa o conteúdo com um modelo pequeno antes de devolver — para um arquivo de
+  código-fonte inteiro (não um resumo), isso reescreve/resume a lógica e perde precisão exatamente
+  onde ela importa (limites de loop, sinais de comparação). `curl -sL <raw url>` devolve o arquivo
+  byte a byte; é o único jeito confiável de portar uma condição de trading bar a bar.
 
 ---
 

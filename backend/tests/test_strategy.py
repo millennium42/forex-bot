@@ -22,6 +22,9 @@ from backend.analysis.strategy import (
     STRATEGY_REGISTRY,
     BBRSIStrategy,
     TechnicalStrategy,
+    ThreeMacdStrategy,
+    _three_macd_buy,
+    _three_macd_sell,
     build_enabled_strategies,
 )
 from backend.analysis.technical_analyzer import IndicatorSnapshot, TechnicalScore
@@ -109,7 +112,7 @@ def test_build_enabled_strategies_technical() -> None:
 
 def test_build_enabled_strategies_nome_desconhecido_falha() -> None:
     with pytest.raises(ValueError, match="estrategia desconhecida"):
-        build_enabled_strategies(["3macd"])
+        build_enabled_strategies(["inexistente"])
 
 
 # -- história 40: BBRSIStrategy ----------------------------------------------
@@ -201,3 +204,219 @@ def test_build_enabled_strategies_bbrsi() -> None:
     assert len(estrategias) == 1
     assert estrategias[0].name == "bbrsi"
     assert isinstance(estrategias[0], BBRSIStrategy)
+
+
+# -- história 41: ThreeMacdStrategy -------------------------------------------
+
+# Arrays na convenção MQL5 (índice 1 = último candle fechado, crescendo para
+# trás). `_three_macd_buy`/`_three_macd_sell` são a máquina de estado literal
+# de `BuySignal()`/`SellSignal()` em `3MACD.mq5`; testá-las direto com arrays
+# construídos à mão isola a lógica de topo/fundo/cruzamento de zero da
+# computação real do MACD (intratável de calibrar por série de preço, dada a
+# quantidade de barras e caminhos alternativos da fonte).
+_BUFF = 10
+
+# Caminho 1 da compra: fundo do M2 nas barras 1-3, cruzamento de zero do M1
+# na barra 4->5, topo do M2 na barra 5->6->7. M3 constante positivo (não
+# forma padrão no caminho 1, só precisa ser positivo).
+_M1_BUY_P1 = [float("nan"), 0.1, -0.3, -0.2, -0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+_M2_BUY_P1 = [float("nan"), 0.5, 0.2, 0.4, 0.3, 0.35, 0.5, 0.3, 0.2, 0.2]
+_M3_BUY_P1 = [float("nan"), 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]
+
+# Espelho exato para venda: mesmos índices, sinais invertidos.
+_M1_SELL_P1 = [float("nan"), -0.1, 0.3, 0.2, 0.1, -0.1, -0.1, -0.1, -0.1, -0.1]
+_M2_SELL_P1 = [float("nan"), -0.5, -0.2, -0.4, -0.3, -0.35, -0.5, -0.3, -0.2, -0.2]
+_M3_SELL_P1 = [float("nan"), -0.6, -0.6, -0.6, -0.6, -0.6, -0.6, -0.6, -0.6, -0.6]
+
+# Caminho 2 da compra: fundo do M3 nas barras 1-3 (dispara o `elif`, porque o
+# M2 das barras 1-3 não forma fundo), cruzamento de zero do M2 na barra
+# 2->3, cruzamento de zero do M1 na barra 3->4, topo do M2 na barra 4->5->6.
+_M1_BUY_P2 = [float("nan"), 0.05, 0.05, -0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+_M2_BUY_P2 = [float("nan"), 0.5, -0.2, 0.3, 0.2, 0.4, 0.25, 0.1, 0.1, 0.1]
+_M3_BUY_P2 = [float("nan"), 0.6, 0.3, 0.5, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4]
+
+# Espelho exato do caminho 2 para venda.
+_M1_SELL_P2 = [float("nan"), -0.05, -0.05, 0.1, -0.1, -0.1, -0.1, -0.1, -0.1, -0.1]
+_M2_SELL_P2 = [float("nan"), -0.5, 0.2, -0.3, -0.2, -0.4, -0.25, -0.1, -0.1, -0.1]
+_M3_SELL_P2 = [float("nan"), -0.6, -0.3, -0.5, -0.4, -0.4, -0.4, -0.4, -0.4, -0.4]
+
+# Nenhum padrão: M3[1]=0 não é maior nem menor que zero — compra e venda
+# falham na primeira cláusula das duas condições, sem varrer o buffer.
+_M1_LATERAL = [float("nan")] + [0.0] * (_BUFF - 1)
+_M2_LATERAL = [float("nan")] + [0.0] * (_BUFF - 1)
+_M3_LATERAL = [float("nan")] + [0.0] * (_BUFF - 1)
+
+# Mesmo fundo do M2 do caminho 1 (dispara a varredura), mas M3 fica <=0 na
+# primeira iteração do primeiro loop — cobre o `return False` por M3 inválido
+# em vez de M2 ou ausência de cruzamento.
+_M3_BUY_P1_M3_INVALIDO = [float("nan"), 0.6, -0.1, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]
+
+# M3 sempre positivo (nunca falha), mas M2 vira <=0 na barra 4 — cobre o
+# `return False` por M2 inválido depois que a checagem de M3 já passou.
+_M1_BUY_P1_SEM_CRUZAMENTO = [float("nan")] + [0.1] * (_BUFF - 1)
+_M2_BUY_P1_M2_INVALIDO = [float("nan"), 0.5, 0.2, 0.4, -0.1, 0.3, 0.3, 0.3, 0.3, 0.3]
+_M3_BUY_P1_SEMPRE_POSITIVO = [float("nan")] + [0.6] * (_BUFF - 1)
+
+# M3 e M2 sempre positivos, M1 nunca cruza (sempre positivo) — o primeiro
+# loop varre o buffer inteiro sem achar `j`, cobre o `return False` de
+# ausência de cruzamento (distinto de M3/M2 inválidos acima).
+_M2_BUY_P1_SEM_CRUZAMENTO = [float("nan"), 0.5, 0.2, 0.4, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3]
+
+
+def test_three_macd_buy_caminho_1() -> None:
+    assert _three_macd_buy(_M1_BUY_P1, _M2_BUY_P1, _M3_BUY_P1, _BUFF) is True
+
+
+def test_three_macd_buy_caminho_2() -> None:
+    assert _three_macd_buy(_M1_BUY_P2, _M2_BUY_P2, _M3_BUY_P2, _BUFF) is True
+
+
+def test_three_macd_sell_caminho_1() -> None:
+    assert _three_macd_sell(_M1_SELL_P1, _M2_SELL_P1, _M3_SELL_P1, _BUFF) is True
+
+
+def test_three_macd_sell_caminho_2() -> None:
+    assert _three_macd_sell(_M1_SELL_P2, _M2_SELL_P2, _M3_SELL_P2, _BUFF) is True
+
+
+def test_three_macd_buy_sem_padrao_devolve_false() -> None:
+    assert _three_macd_buy(_M1_LATERAL, _M2_LATERAL, _M3_LATERAL, _BUFF) is False
+
+
+def test_three_macd_sell_sem_padrao_devolve_false() -> None:
+    assert _three_macd_sell(_M1_LATERAL, _M2_LATERAL, _M3_LATERAL, _BUFF) is False
+
+
+def test_three_macd_buy_m3_invalido_durante_varredura_devolve_false() -> None:
+    assert (
+        _three_macd_buy(_M1_BUY_P1_SEM_CRUZAMENTO, _M2_BUY_P1, _M3_BUY_P1_M3_INVALIDO, _BUFF)
+        is False
+    )
+
+
+def test_three_macd_buy_m2_invalido_durante_varredura_devolve_false() -> None:
+    assert (
+        _three_macd_buy(
+            _M1_BUY_P1_SEM_CRUZAMENTO,
+            _M2_BUY_P1_M2_INVALIDO,
+            _M3_BUY_P1_SEMPRE_POSITIVO,
+            _BUFF,
+        )
+        is False
+    )
+
+
+def test_three_macd_buy_sem_cruzamento_do_m1_devolve_false() -> None:
+    assert (
+        _three_macd_buy(
+            _M1_BUY_P1_SEM_CRUZAMENTO,
+            _M2_BUY_P1_SEM_CRUZAMENTO,
+            _M3_BUY_P1_SEMPRE_POSITIVO,
+            _BUFF,
+        )
+        is False
+    )
+
+
+def test_three_macd_serie_curta_para_macd_34_144_devolve_none() -> None:
+    """AC: série curta demais para o MACD(34,144) — default real — devolve None."""
+    strategy = ThreeMacdStrategy()
+    assert strategy.evaluate(_candles_from_closes([100.0] * 100)) is None
+
+
+def test_three_macd_serie_lateral_real_devolve_hold() -> None:
+    """Preço constante: MACD real fica em 0 nos três períodos — HOLD genuíno,
+    sem monkeypatch de `_macd_series` (exercita a computação real do MACD)."""
+    strategy = ThreeMacdStrategy(
+        m1_fast=2, m1_slow=3, m2_fast=3, m2_slow=5, m3_fast=5, m3_slow=8, buff_size=10
+    )
+
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 30))
+
+    assert resultado is not None
+    assert resultado.direction is Direction.HOLD
+    assert resultado.confidence == pytest.approx(0.0)
+
+
+def _patch_macd_series_por_slow(
+    monkeypatch: pytest.MonkeyPatch,
+    estrategia: ThreeMacdStrategy,
+    m1: list[float],
+    m2: list[float],
+    m3: list[float],
+) -> None:
+    por_slow = {
+        estrategia._m1_slow: m1,
+        estrategia._m2_slow: m2,
+        estrategia._m3_slow: m3,
+    }
+
+    def fake_macd_series(close: pd.Series, fast: int, slow: int, buff_size: int) -> list[float]:
+        return por_slow[slow]
+
+    monkeypatch.setattr(strategy_module, "_macd_series", fake_macd_series)
+
+
+def test_three_macd_tendencia_de_alta_dispara_compra(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = ThreeMacdStrategy(buff_size=_BUFF)
+    _patch_macd_series_por_slow(monkeypatch, strategy, _M1_BUY_P1, _M2_BUY_P1, _M3_BUY_P1)
+
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 200))
+
+    assert resultado is not None
+    assert resultado.direction is Direction.BUY
+    assert resultado.score == pytest.approx(1.0)
+    assert resultado.confidence == pytest.approx(1.0)
+    assert resultado.stop_loss is None
+    assert resultado.components == {"m1_1": 0.1, "m2_1": 0.5, "m3_1": 0.6}
+
+
+def test_three_macd_tendencia_de_baixa_dispara_venda(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = ThreeMacdStrategy(buff_size=_BUFF)
+    _patch_macd_series_por_slow(monkeypatch, strategy, _M1_SELL_P1, _M2_SELL_P1, _M3_SELL_P1)
+
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 200))
+
+    assert resultado is not None
+    assert resultado.direction is Direction.SELL
+    assert resultado.score == pytest.approx(-1.0)
+    assert resultado.confidence == pytest.approx(1.0)
+    assert resultado.stop_loss is None
+
+
+def test_three_macd_lateral_devolve_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = ThreeMacdStrategy(buff_size=_BUFF)
+    _patch_macd_series_por_slow(monkeypatch, strategy, _M1_LATERAL, _M2_LATERAL, _M3_LATERAL)
+
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 200))
+
+    assert resultado is not None
+    assert resultado.direction is Direction.HOLD
+    assert resultado.confidence == pytest.approx(0.0)
+    assert resultado.stop_loss is None
+
+
+def test_three_macd_com_nan_devolve_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Indicador em aquecimento apesar do comprimento mínimo: ausência de informação."""
+    strategy = ThreeMacdStrategy(buff_size=_BUFF)
+    m3_com_nan = list(_M3_BUY_P1)
+    m3_com_nan[5] = float("nan")
+    _patch_macd_series_por_slow(monkeypatch, strategy, _M1_BUY_P1, _M2_BUY_P1, m3_com_nan)
+
+    assert strategy.evaluate(_candles_from_closes([100.0] * 200)) is None
+
+
+def test_three_macd_name_e_3macd() -> None:
+    assert ThreeMacdStrategy().name == "3macd"
+
+
+def test_registry_contem_3macd() -> None:
+    assert "3macd" in STRATEGY_REGISTRY
+
+
+def test_build_enabled_strategies_3macd() -> None:
+    estrategias = build_enabled_strategies(["3macd"])
+
+    assert len(estrategias) == 1
+    assert estrategias[0].name == "3macd"
+    assert isinstance(estrategias[0], ThreeMacdStrategy)
