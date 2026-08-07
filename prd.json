@@ -567,16 +567,18 @@
     {
       "id": 46,
       "title": "Volume proporcional ao montante e a confianca",
-      "description": "O teto de volume deixa de ser fixo (2.0 lotes, história 32) e passa a ser dinâmico com base na confiança do sinal. Com 10% confiança o teto é 2.0 lotes; com 70% é 5.0 lotes; crescimento logarítmico entre eles. O volume também continua derivado do risco em % do equity (história 45), modulado pela confiança.",
+      "description": "O teto de volume deixa de ser fixo (2.0 lotes, história 32) e passa a ser dinâmico. Entregue em duas partes: (a) curva logarítmica por confiança do sinal — 10% -> 2.0 lotes, 70% -> 5.0; (b) depois de medir em produção, teto DECLARADO PELA ESTRATÉGIA, proporcional ao Risk da fonte MQL5, com a curva de confiança valendo só para quem não declara. Motivo da parte (b): com stop de ~1,5 pip o volume que o risco pede sempre estoura o teto, então é o teto que decide o tamanho real — e como estratégia binária tem confiança constante (1.0 -> 0.7 fundida -> 70%), a curva dava sempre o tamanho MÁXIMO justamente a quem não mediu convicção, invertendo Kelly.",
       "acceptanceCriteria": [
         "volume_max_per_order_lots deixa de ser constante configurável",
-        "novo método _volume_max_por_confianca(confidence) devolve teto dinâmico: 2.0 em 10%, 5.0 em 70%, log entre",
-        "o volume calculado por risco é limitado por min(volume_risco, teto_dinâmico)",
-        "confiança 100% aceita que o teto suba proporcional (ex: 5.0 em 70% → 7.0+ em 100+%)",
-        "teste: confiança 10% teto=2.0, 40% teto~3.0, 70% teto=5.0, 100% teto>5.0",
-        "teste: volume final respeitado ao vivo contra broker"
+        "_volume_max_por_confianca(confidence) devolve teto: 2.0 em 10%, 5.0 em 70%, log entre",
+        "o volume calculado por risco é limitado por min(volume_risco, teto)",
+        "estratégia portada declara o próprio teto, proporcional ao Risk da fonte: 3macd 1.0, bbrsi 2.0, 2macdsto 4.5 lotes",
+        "technical, de score contínuo, continua na curva por confiança — lá a confiança de fato varia",
+        "o teto é validado no risk_manager via OrderRequest.max_volume, não só no runner",
+        "teste: os tetos por estratégia mantêm a razão 0,5 : 1,0 : 2,25 do Risk da fonte",
+        "teste: technical não declara teto próprio (cai na curva)"
       ],
-      "passes": false
+      "passes": true
     }
   ]
 }
