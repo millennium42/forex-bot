@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal
+from backend.analysis.strategy import StrategySignal
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError, Position
 from backend.config import Settings
 from backend.execution import runner as runner_module
@@ -838,13 +839,15 @@ def test_process_symbol_grava_signal_antes_da_ordem_e_liga_trade(session: Sessio
     trade = session.execute(select(Trade)).scalars().one()
 
     assert trade.signal_id == signal.id
+    assert trade.strategy == "technical"
+    assert signal.strategy == "technical"
     assert signal.direction in (Direction.BUY, Direction.SELL)
     assert signal.weight_version == DEFAULT_WEIGHTS.version
     assert signal.sentiment_score is None
     assert signal.sentiment_confidence is None
     assert signal.technical_score is not None
-    assert "indicators" in signal.inputs
-    assert "atr" in signal.inputs["indicators"]
+    assert "components" in signal.inputs
+    assert "rsi" in signal.inputs["components"]
     assert signal.inputs["weights"]["version"] == DEFAULT_WEIGHTS.version
 
 
@@ -979,3 +982,154 @@ def test_run_conecta_e_executa_max_cycles(
 
     assert len(ciclos) == 2
     assert fake_mt5_client.is_connected is False  # __exit__ desligou o terminal
+
+
+# -- história 39: registro de estratégias paralelas --------------------------
+
+
+class _StubStrategy:
+    """Estratégia falsa: devolve um resultado fixo ou lança uma exceção fixa."""
+
+    def __init__(
+        self,
+        name: str,
+        resultado: StrategySignal | None = None,
+        excecao: Exception | None = None,
+    ) -> None:
+        self.name = name
+        self._resultado = resultado
+        self._excecao = excecao
+        self.chamadas = 0
+
+    def evaluate(self, candles: object) -> StrategySignal | None:
+        self.chamadas += 1
+        if self._excecao is not None:
+            raise self._excecao
+        return self._resultado
+
+
+def test_process_symbol_isola_estrategia_que_lanca_excecao(session: Session) -> None:
+    """AC7 da história 39: uma estratégia quebrada não derruba as outras no ciclo."""
+    candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
+    client = _client(FakeTerminal(candle_rows=candles))
+    quebrada = _StubStrategy("quebrada", excecao=RuntimeError("boom"))
+    boa = _StubStrategy(
+        "boa", resultado=StrategySignal(direction=Direction.BUY, confidence=0.9, score=0.9)
+    )
+    runner = _runner(min_signal_confidence=0.01)
+    runner._strategies = [quebrada, boa]
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    assert quebrada.chamadas == 1
+    assert boa.chamadas == 1
+    trades = session.execute(select(Trade)).scalars().all()
+    assert len(trades) == 1
+    assert trades[0].strategy == "boa"
+
+
+def test_process_symbol_estrategia_sem_setup_nao_gera_signal_nem_ordem(session: Session) -> None:
+    candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
+    client = _client(FakeTerminal(candle_rows=candles))
+    sem_setup = _StubStrategy("sem_setup", resultado=None)
+    runner = _runner()
+    runner._strategies = [sem_setup]
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    assert sem_setup.chamadas == 1
+    assert session.execute(select(Signal)).scalars().all() == []
+    assert session.execute(select(Trade)).scalars().all() == []
+
+
+def test_process_symbol_duas_estrategias_geram_dois_signals_e_duas_ordens(
+    session: Session,
+) -> None:
+    """AC4/AC5: todas as estratégias habilitadas rodam, cada uma com sua própria ordem."""
+    candles = _candle_rows([100.0 + i * 0.05 for i in range(60)], amplitude=0.02)
+    client = _client(FakeTerminal(candle_rows=candles))
+    a = _StubStrategy(
+        "estrategia_a", resultado=StrategySignal(direction=Direction.BUY, confidence=0.9, score=0.9)
+    )
+    b = _StubStrategy(
+        "estrategia_b", resultado=StrategySignal(direction=Direction.BUY, confidence=0.9, score=0.9)
+    )
+    runner = _runner(min_signal_confidence=0.01)
+    runner._strategies = [a, b]
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+
+    runner._process_symbol("EURUSD", client, session, order_manager)
+
+    signals = session.execute(select(Signal)).scalars().all()
+    trades = session.execute(select(Trade)).scalars().all()
+    assert {s.strategy for s in signals} == {"estrategia_a", "estrategia_b"}
+    assert {t.strategy for t in trades} == {"estrategia_a", "estrategia_b"}
+    # client_request_id inclui a estratégia: as duas ordens não colidem.
+    assert len({t.client_request_id for t in trades}) == 2
+
+
+def test_pode_abrir_posicao_estrategias_diferentes_nao_bloqueiam_entre_si(
+    session: Session,
+) -> None:
+    """AC6: o cooldown passa a ser por (símbolo, direção, estratégia)."""
+    runner = _runner(signal_repeat_cooldown_minutes=30)
+    client = _client(FakeTerminal(positions=(_posicao_aberta("EURUSD", tipo=0),)))
+    order_manager = OrderManager(client, session, RiskManager(runner.settings))
+    instrumento = _instrumento(session, client)
+
+    runner._executar(
+        "EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento, strategy="a"
+    )
+    runner._executar(
+        "EURUSD", BUY_SIGNAL, 0.0040, client, session, order_manager, instrumento, strategy="b"
+    )
+
+    trades = session.execute(select(Trade)).scalars().all()
+    assert len(trades) == 2
+    assert {t.strategy for t in trades} == {"a", "b"}
+
+
+def test_client_request_id_muda_entre_estrategias(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runner_module, "datetime", _FixedDatetime)
+
+    id_a = BotRunner._client_request_id("EURUSD", Side.BUY, "estrategia_a")
+    id_b = BotRunner._client_request_id("EURUSD", Side.BUY, "estrategia_b")
+
+    assert id_a != id_b
+
+
+def test_registrar_bloqueio_nao_duplica_mesmo_motivo_simbolo_e_estrategia(
+    session: Session,
+) -> None:
+    runner = _runner()
+
+    runner._registrar_bloqueio(session, "cooldown", "EURUSD", "technical", direcao="buy")
+    runner._registrar_bloqueio(session, "cooldown", "EURUSD", "technical", direcao="buy")
+
+    eventos = (
+        session.execute(select(AuditLog).where(AuditLog.event_type == AuditEventType.ORDER_BLOCKED))
+        .scalars()
+        .all()
+    )
+    assert len(eventos) == 1
+
+
+def test_registrar_bloqueio_estrategias_diferentes_nao_sao_deduplicadas(session: Session) -> None:
+    runner = _runner()
+
+    runner._registrar_bloqueio(session, "cooldown", "EURUSD", "technical", direcao="buy")
+    runner._registrar_bloqueio(session, "cooldown", "EURUSD", "bbrsi", direcao="buy")
+
+    eventos = (
+        session.execute(select(AuditLog).where(AuditLog.event_type == AuditEventType.ORDER_BLOCKED))
+        .scalars()
+        .all()
+    )
+    assert len(eventos) == 2
+
+
+def test_botrunner_falha_no_boot_com_estrategia_desconhecida() -> None:
+    with pytest.raises(ValueError, match="estrategia desconhecida"):
+        _runner(strategies_enabled="bbrsi")

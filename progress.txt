@@ -16,6 +16,14 @@
 - Coluna NOT NULL nova em tabela com dados existentes: `server_default` na migration de criacao,
   depois `op.alter_column(..., server_default=None)` para nao deixar o default preso no schema -
   o default de verdade fica so no `mapped_column(default=...)` do lado Python.
+- Registro de implementacoes plugaveis (estrategias, backends, etc): `dict[str, Callable[[], T]]`
+  chaveado pelo nome de config + funcao fabrica que levanta `ValueError` pra nome desconhecido no
+  boot (construcao do objeto que usa o registro), nunca em runtime no meio de um ciclo. Mesma
+  familia do `_load_x` de dependencia pesada, mas pra escolha entre implementacoes, nao ausencia
+  de pacote.
+- Duplicar um campo em duas tabelas (em vez de JOIN) e valido quando cada tabela serve uma consulta
+  diferente que precisa funcionar mesmo sem a outra existir (ex: FK nullable do lado que faltaria).
+  Documentar o motivo no comentario da coluna - sem isso parece dado redundante por descuido.
 - `MT5Terminal` e um Protocol estrutural: metodo novo no Protocol exige atualizar TODO FakeTerminal
   usado como `terminal=` em teste, senao o mypy strict rejeita a injecao (exceto onde o dublê ja
   tem `# type: ignore` deliberado).
@@ -812,3 +820,64 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
 ---
 Nenhuma historia concluida na iteracao 5. Parando para inspecao.
 Nenhuma historia concluida na iteracao 1. Parando para inspecao.
+
+## [2026-08-06] — História 39: Arquitetura de estratégias paralelas
+- Novo Protocol `Strategy` (`backend/analysis/strategy.py`): recebe um DataFrame OHLC e devolve
+  `StrategySignal(direction, confidence, components, score)` ou `None` quando não há setup.
+  `TechnicalStrategy` (`name="technical"`) é a leitura que já existia (technical_analyzer + alpha
+  factors), preservada como estratégia legada via `STRATEGY_REGISTRY`. `build_enabled_strategies`
+  instancia as estratégias de `Settings.strategies_enabled_list` e falha (`ValueError`) no boot do
+  `BotRunner` se um nome for desconhecido — nunca em runtime no meio de um ciclo.
+- `BotRunner._process_symbol` agora itera **todas** as estratégias habilitadas por símbolo a cada
+  ciclo: cada uma recebe o mesmo OHLC/ATR/sentimento e decide por conta própria. Uma estratégia que
+  lança exceção é logada e pulada (`try/except` por estratégia dentro do loop) — as outras seguem
+  no mesmo ciclo. Cada resultado passa por `fuse_signals` (mesmo mecanismo de sempre, agora
+  reaproveitado por estratégia) antes de virar `Signal`/ordem.
+- Duas colunas novas, ambas com default `'technical'` (migration `4b9aeb79906d`):
+  `signals.strategy` (fonte de verdade para medir performance por estratégia a partir dos
+  outcomes) e `trades.strategy` (denormalizado de propósito — o cooldown por
+  símbolo+direção+estratégia precisa ser consultável mesmo quando `signal_id` é nulo, sem depender
+  de um JOIN). `client_request_id` passou a incluir a estratégia
+  (`bot-{symbol}-{side}-{strategy}-{bucket}`): duas estratégias no mesmo símbolo/direção não
+  colidem na idempotência nem no cooldown (`_pode_abrir_posicao` agora filtra `Trade.strategy`).
+- Endpoint novo `GET /strategies/performance` (`backend/api/routers/strategies.py`): agrega
+  `Outcome` join `Signal` por `Signal.strategy`, devolve trades/win_rate/pnl líquido por estratégia.
+- Config nova: `STRATEGIES_ENABLED` (default `"technical"`), mesmo padrão de lista separada por
+  vírgula de `TRADING_SYMBOLS` (`strategies_enabled_list`).
+- Arquivos: `backend/analysis/strategy.py` (novo), `backend/api/routers/strategies.py` (novo),
+  `backend/migrations/versions/4b9aeb79906d_add_signal_and_trade_strategy.py` (novo),
+  `backend/config.py`, `backend/models/signal.py`, `backend/models/trade.py`,
+  `backend/execution/runner.py`, `backend/execution/order_manager.py`, `backend/api/main.py`,
+  `backend/tests/test_strategy.py` (novo), `backend/tests/test_runner.py`,
+  `backend/tests/test_runner_sentimento.py`, `backend/tests/test_config.py`,
+  `backend/tests/test_dashboard_api.py`, `backend/tests/test_migrations.py`.
+- **Aprendizados para as próximas iterações:**
+  - `signals.strategy` (fonte para performance/outcomes) e `trades.strategy` (fonte para cooldown)
+    são deliberadamente duplicados — não é a mesma coisa vista de dois lugares. Testes que chamam
+    `_pode_abrir_posicao`/`_executar` direto (sem passar por `_process_symbol`/`Signal`) só
+    continuam funcionando porque `Trade.strategy` tem default Python `"technical"` e não depende de
+    um `Signal` existir; se a decisão fosse via JOIN a `Signal.strategy`, todo teste que cria
+    `Trade(signal_id=None)` direto (comum em `test_runner_limites.py`) quebraria silenciosamente ao
+    tratar o trade como "sem estratégia registrada" em vez de "technical".
+  - `_registrar_bloqueio` (história 36) ganhou `strategy` na chave de dedupe. Sem isso, duas
+    estratégias bloqueando pelo mesmo motivo no mesmo símbolo no mesmo ciclo colapsavam num só
+    evento de audit log — a segunda parecia repetição da primeira, mas era um bloqueio novo de uma
+    fonte diferente.
+  - ATR e sentimento continuam lidos **uma vez por símbolo**, fora do loop de estratégias — são
+    dado de mercado/contexto, não opinião de estratégia. Só `direction`/`confidence`/`components`
+    vêm de cada `Strategy.evaluate()`; o stop (ATR-based) e a fusão com sentimento são
+    infraestrutura compartilhada.
+  - `Signal.inputs["indicators"]` (o snapshot bruto de RSI/MACD/etc.) saiu do payload — não fazia
+    sentido genérico entre estratégias com componentes próprios (histórias 40-42 não terão
+    `IndicatorSnapshot`). Virou `Signal.inputs["components"]` (o dict de scores por indicador que
+    a estratégia já expõe via `StrategySignal.components`). Nenhum código de produção lia a chave
+    antiga — só um teste, atualizado junto.
+  - `StrategySignal` carrega `score: float` além de `direction`/`confidence`/`components` (não
+    pedido explicitamente pela AC, mas necessário): é o que permite ao runner reconstruir um
+    `TechnicalScore`-like e reaproveitar `fuse_signals` sem duplicar a aritmética de combinação
+    peso-técnico × peso-sentimento para cada estratégia nova.
+  - `backend/execution/order_manager.py` está em 73% de cobertura isolada (já estava em 72% antes
+    desta história — não é regressão introduzida aqui, é lacuna pré-existente nos ramos de erro do
+    MT5/IntegrityError). Cobertura global da suíte seguiu ≥80% (93,5%); não mexi nisso por não ser
+    escopo desta história.
+---

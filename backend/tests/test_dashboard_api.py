@@ -244,3 +244,84 @@ def test_promotion_status_computes_real_metrics_from_outcomes(
     win_rate_criterion = next(c for c in body["criteria"] if c["key"] == "win_rate")
     assert win_rate_criterion["value"] == 100.0
     assert win_rate_criterion["passed"] is True
+
+
+# -- história 39: performance por estratégia ----------------------------------
+
+
+def _signal_com_estrategia(session: Session, instrument: Instrument, strategy: str) -> Signal:
+    signal = Signal(
+        instrument_id=instrument.id,
+        strategy=strategy,
+        direction=Direction.BUY,
+        confidence=0.7,
+        fused_score=0.5,
+        weight_version="v1.0",
+        inputs={},
+    )
+    session.add(signal)
+    session.commit()
+    return signal
+
+
+def _outcome_para(
+    session: Session, instrument: Instrument, signal: Signal, *, pnl: float, was_correct: bool
+) -> None:
+    trade = Trade(
+        client_request_id=f"req-{signal.id}-{pnl}",
+        instrument_id=instrument.id,
+        signal_id=signal.id,
+        side=Side.BUY,
+        status=TradeStatus.CLOSED,
+        volume=0.01,
+        stop_loss=1.0,
+        trading_mode="demo",
+    )
+    session.add(trade)
+    session.commit()
+    outcome = Outcome(
+        trade_id=trade.id,
+        signal_id=signal.id,
+        exit_price=1.1,
+        pnl=pnl,
+        pnl_pct=pnl / 100.0,
+        duration_seconds=60,
+        actual_direction=Direction.BUY,
+        was_correct=was_correct,
+    )
+    session.add(outcome)
+    session.commit()
+
+
+def test_strategy_performance_empty_by_default(client: TestClient) -> None:
+    resp = client.get("/strategies/performance")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_strategy_performance_agrega_por_estrategia(
+    client: TestClient, api_session: Session
+) -> None:
+    instrument = Instrument(symbol="EURUSD", digits=5, point=0.00001, contract_size=100_000)
+    api_session.add(instrument)
+    api_session.commit()
+
+    tecnica_1 = _signal_com_estrategia(api_session, instrument, "technical")
+    tecnica_2 = _signal_com_estrategia(api_session, instrument, "technical")
+    bbrsi = _signal_com_estrategia(api_session, instrument, "bbrsi")
+
+    _outcome_para(api_session, instrument, tecnica_1, pnl=10.0, was_correct=True)
+    _outcome_para(api_session, instrument, tecnica_2, pnl=-5.0, was_correct=False)
+    _outcome_para(api_session, instrument, bbrsi, pnl=20.0, was_correct=True)
+
+    resp = client.get("/strategies/performance")
+    assert resp.status_code == 200
+    body = {row["strategy"]: row for row in resp.json()}
+
+    assert body["technical"]["trades"] == 2
+    assert body["technical"]["win_rate"] == pytest.approx(50.0)
+    assert body["technical"]["net_pnl"] == pytest.approx(5.0)
+
+    assert body["bbrsi"]["trades"] == 1
+    assert body["bbrsi"]["win_rate"] == pytest.approx(100.0)
+    assert body["bbrsi"]["net_pnl"] == pytest.approx(20.0)

@@ -67,6 +67,14 @@ class Trade(Base, CreatedAtMixin):
     # config atual: a config muda, o histórico não pode mudar junto.
     trading_mode: Mapped[str] = mapped_column(String(8), nullable=False)
 
+    # Estratégia que gerou esta ordem (história 39). Duplicado em relação a
+    # `Signal.strategy` de propósito: o cooldown por (símbolo, direção,
+    # estratégia) precisa ser consultável mesmo quando `signal_id` é nulo
+    # (intervenção manual), sem depender de um JOIN que pode não existir.
+    strategy: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="technical", index=True
+    )
+
     # Identificadores do lado do MT5, preenchidos quando o broker confirma.
     mt5_order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
     mt5_position_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)

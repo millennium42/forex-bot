@@ -50,6 +50,7 @@ class OrderManager:
         daily_loss: float,
         signal_id: int | None = None,
         account_drawdown: float = 0.0,
+        strategy: str = "technical",
     ) -> Trade | None:
         """Gera ou recupera uma ordem de forma idempotente, executando no MT5.
 
@@ -88,6 +89,7 @@ class OrderManager:
                 stop_loss=request.stop_loss or 0.0,
                 take_profit=request.take_profit,
                 trading_mode=mode,
+                strategy=strategy,
             )
             self.db.add(trade)
             event = AuditLog(
@@ -111,6 +113,7 @@ class OrderManager:
                 stop_loss=request.stop_loss or 0.0,
                 take_profit=request.take_profit,
                 trading_mode=mode,
+                strategy=strategy,
             )
             self.db.add(trade)
             event = AuditLog(
@@ -138,6 +141,7 @@ class OrderManager:
             stop_loss=sl,
             take_profit=request.take_profit,
             trading_mode=mode,
+            strategy=strategy,
         )
         self.db.add(trade)
 

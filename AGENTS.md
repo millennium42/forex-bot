@@ -44,6 +44,9 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 34 — Múltiplas posições por símbolo com leitura distinta | ✅ |
 | 35 — Alpha factors clássicos no technical analyzer | ✅ |
 | 36 — Dashboard simplificado e fiel ao dado | ✅ |
+| 37 — Auditoria contínua do banco | ✅ |
+| 38 — Perfil de lançamento: 33s, 4 pares, sem sentimento | ✅ |
+| 39 — Arquitetura de estratégias paralelas | ✅ |
 
 ---
 
@@ -293,6 +296,24 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   hora) ficaram: são agregações honestas de dado já persistido, não extrapolação — a AC "remover
   gráfico sem dado real por trás" mirava um caso específico, não um convite a esvaziar a Visão
   geral.
+- **Registro de estratégias paralelas (história 39): `backend/analysis/strategy.py`.** Protocol
+  `Strategy` (`evaluate(candles) -> StrategySignal | None`, `None` só para ausência de setup, nunca
+  para HOLD) + `STRATEGY_REGISTRY: dict[str, Callable[[], Strategy]]` + `build_enabled_strategies`
+  que falha (`ValueError`) na construção do `BotRunner` para nome desconhecido em
+  `STRATEGIES_ENABLED` — nunca no meio de um ciclo. `TechnicalStrategy` (`name="technical"`) é a
+  leitura que já existia, preservada como legado/default. `BotRunner._process_symbol` lê
+  ATR/sentimento **uma vez por símbolo** (dado de mercado, compartilhado) e itera todas as
+  estratégias habilitadas; cada uma vira um `Signal` próprio via `fuse_signals` e, se aprovada,
+  uma ordem própria. Uma estratégia nova (histórias 40-42) só precisa implementar o Protocol e
+  entrar no `STRATEGY_REGISTRY` — não toca no runner.
+- **`signals.strategy` e `trades.strategy` são colunas distintas de propósito, não duplicação por
+  descuido.** `Signal.strategy` é a fonte de verdade para performance por estratégia (`GET
+  /strategies/performance`, junta `Outcome` a `Signal`). `Trade.strategy` é denormalizado para o
+  cooldown por (símbolo, direção, estratégia) em `_pode_abrir_posicao` funcionar mesmo quando
+  `Trade.signal_id` é nulo (trade manual, ou teste que chama `_executar` direto) — um JOIN a
+  `Signal` faria esses trades "sumirem" da checagem de cooldown. `client_request_id` também ganhou
+  a estratégia no meio (`bot-{symbol}-{side}-{strategy}-{bucket}`) pelo mesmo motivo: idempotência
+  e cooldown não podem colidir entre estratégias diferentes no mesmo símbolo/direção.
 - **Fator alpha novo em `IndicatorSnapshot`: raw no snapshot, normalização no `_score_*`.** Mesmo
   padrão do MACD/ATR: o snapshot guarda o valor cru (`momentum_5`, `reversion_mean`,
   `atr_baseline`, `adx_pos`...) calculado via `close.diff()`/`.rolling()`/`ADXIndicator` da lib
@@ -314,7 +335,8 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | Histórias e critérios | `prd.json` / `tasks/prd-forex-bot.md` |
 | Infra de estado | `docker-compose.yml` (só Postgres + Redis) |
 | CI | `.github/workflows/ci.yml` |
-| Endpoints do dashboard | `backend/api/routers/{trades,signals,audit,promotion}.py` |
+| Endpoints do dashboard | `backend/api/routers/{trades,signals,audit,promotion,strategies}.py` |
+| Registro de estratégias | `backend/analysis/strategy.py` |
 | Componentes do dashboard | `frontend/src/components/{charts,modals,tabs}/` |
 | Fetchers + tipos do frontend | `frontend/src/lib/api.ts` |
 

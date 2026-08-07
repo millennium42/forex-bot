@@ -483,7 +483,7 @@
         "estrategia que lanca excecao e isolada: as outras continuam no mesmo ciclo",
         "endpoint que reporta performance por estrategia (trades, win rate, pnl liquido)"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 40,

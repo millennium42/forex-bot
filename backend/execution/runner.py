@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -34,12 +33,8 @@ from backend.analysis.sentiment_analyzer import (
     SentimentUnavailableError,
 )
 from backend.analysis.signal_fusion import DEFAULT_WEIGHTS, FusedSignal, fuse_signals
-from backend.analysis.technical_analyzer import (
-    IndicatorSnapshot,
-    TechnicalAnalyzer,
-    TechnicalScore,
-    compute_indicators,
-)
+from backend.analysis.strategy import Strategy, StrategySignal, build_enabled_strategies
+from backend.analysis.technical_analyzer import TechnicalScore, compute_indicators
 from backend.collection.documents import recent_documents
 from backend.collection.mt5_client import MT5Client, MT5ConnectionError, Position
 from backend.config import Settings, get_settings
@@ -79,12 +74,21 @@ class BotRunner:
         interval_seconds: int = 60,
         settings: Settings | None = None,
         sentiment_analyzer: SentimentAnalyzer | None = None,
+        strategies: list[Strategy] | None = None,
     ) -> None:
         self.symbols = symbols
         self.interval_seconds = interval_seconds
         self.settings = settings or get_settings()
-        self.analyzer = TechnicalAnalyzer()
         self._sentiment_analyzer = sentiment_analyzer
+        # Registro de estratégias paralelas (história 39): cada uma avalia o
+        # mesmo OHLC por conta própria, a cada ciclo, para cada símbolo. Nome
+        # desconhecido em `STRATEGIES_ENABLED` falha aqui, no boot — não no
+        # meio de um ciclo.
+        self._strategies = (
+            strategies
+            if strategies is not None
+            else build_enabled_strategies(self.settings.strategies_enabled_list)
+        )
 
     # -- laço principal ------------------------------------------------------
     def run(self, max_cycles: int | None = None) -> None:
@@ -153,7 +157,12 @@ class BotRunner:
                 session.rollback()
 
     def _registrar_bloqueio(
-        self, session: Session, motivo: str, symbol: str, **detalhes: Any
+        self,
+        session: Session,
+        motivo: str,
+        symbol: str,
+        strategy: str = "technical",
+        **detalhes: Any,
     ) -> None:
         """Grava por que uma ordem não saiu (história 36).
 
@@ -164,11 +173,14 @@ class BotRunner:
         risco que não cobre o lote mínimo) só existiam como log estruturado
         (`structlog`), nunca consultável pela API.
 
-        **Só grava quando o motivo muda** para aquele símbolo. Um bloqueio
-        persistente — cooldown de vários minutos com ciclo de 33s — repetia a
-        mesma linha a cada ciclo: 290 registros por hora dizendo a mesma coisa,
-        num log append-only que nunca é podado. O que interessa ao operador é a
-        transição ("passou a bloquear por cooldown"), não a repetição.
+        **Só grava quando o motivo muda** para aquele símbolo+estratégia. Um
+        bloqueio persistente — cooldown de vários minutos com ciclo de 33s —
+        repetia a mesma linha a cada ciclo: 290 registros por hora dizendo a
+        mesma coisa, num log append-only que nunca é podado. O que interessa
+        ao operador é a transição ("passou a bloquear por cooldown"), não a
+        repetição. A partir da história 39, a chave de dedupe inclui a
+        estratégia: duas estratégias bloqueando pelo mesmo motivo no mesmo
+        símbolo, no mesmo ciclo, são eventos distintos, não repetição.
         """
         ultimo = session.scalar(
             select(AuditLog)
@@ -180,13 +192,14 @@ class BotRunner:
             ultimo is not None
             and ultimo.payload.get("symbol") == symbol
             and ultimo.payload.get("motivo") == motivo
+            and ultimo.payload.get("estrategia") == strategy
         ):
             return
 
         session.add(
             AuditLog(
                 event_type=AuditEventType.ORDER_BLOCKED,
-                payload={"motivo": motivo, "symbol": symbol, **detalhes},
+                payload={"motivo": motivo, "symbol": symbol, "estrategia": strategy, **detalhes},
             )
         )
         session.commit()
@@ -199,6 +212,13 @@ class BotRunner:
         session: Session,
         order_manager: OrderManager,
     ) -> None:
+        """Avalia TODAS as estratégias habilitadas para o símbolo (história 39).
+
+        ATR e sentimento são lidos uma vez e compartilhados entre as
+        estratégias: são dado de mercado (volatilidade) e contexto (notícia),
+        não opinião — cada estratégia decide direção/confiança por conta
+        própria, mas o stop e a fusão com sentimento usam a mesma base.
+        """
         candles = client.get_candles(symbol, self.settings.mt5_timeframe, CANDLES_POR_CICLO)
         indicadores = compute_indicators(candles)
         if indicadores is None:
@@ -207,19 +227,66 @@ class BotRunner:
             logger.debug("runner.sem_indicadores", symbol=symbol)
             return
 
-        technical = self.analyzer.analyze(candles)
         sentiment = self._obter_sentimento(session, symbol)
-        fused = fuse_signals(technical=technical, sentiment=sentiment)
+        instrument = self._get_or_create_instrument(session, symbol, client)
+
+        for strategy in self._strategies:
+            try:
+                resultado = strategy.evaluate(candles)
+            except Exception as exc:
+                # Isolamento: uma estratégia quebrada não pode derrubar as
+                # outras no mesmo ciclo (AC7 da história 39).
+                logger.error(
+                    "runner.estrategia_falhou",
+                    symbol=symbol,
+                    estrategia=strategy.name,
+                    erro=str(exc),
+                )
+                continue
+
+            if resultado is None:
+                logger.debug("runner.sem_setup", symbol=symbol, estrategia=strategy.name)
+                continue
+
+            self._avaliar_estrategia(
+                symbol,
+                strategy.name,
+                resultado,
+                sentiment,
+                indicadores.atr,
+                client,
+                session,
+                order_manager,
+                instrument,
+            )
+
+    def _avaliar_estrategia(
+        self,
+        symbol: str,
+        strategy_name: str,
+        resultado: StrategySignal,
+        sentiment: SentimentScore | None,
+        atr: float,
+        client: MT5Client,
+        session: Session,
+        order_manager: OrderManager,
+        instrument: Instrument,
+    ) -> None:
+        """Funde o sinal de uma estratégia com o sentimento e decide se executa."""
+        technical_like = TechnicalScore(
+            score=resultado.score, confidence=resultado.confidence, components=resultado.components
+        )
+        fused = fuse_signals(technical=technical_like, sentiment=sentiment)
         logger.info(
             "runner.avaliado",
             symbol=symbol,
+            estrategia=strategy_name,
             direcao=fused.direction.value,
             confianca=round(fused.confidence, 3),
         )
 
-        instrument = self._get_or_create_instrument(session, symbol, client)
         signal = self._registrar_signal(
-            session, instrument, fused, technical, indicadores, sentiment
+            session, instrument, fused, resultado, strategy_name, sentiment
         )
 
         if fused.direction is Direction.HOLD:
@@ -232,6 +299,7 @@ class BotRunner:
             logger.info(
                 "runner.confianca_insuficiente",
                 symbol=symbol,
+                estrategia=strategy_name,
                 confianca=round(fused.confidence, 3),
                 limiar=self.settings.min_signal_confidence,
             )
@@ -239,13 +307,14 @@ class BotRunner:
                 session,
                 "confianca_insuficiente",
                 symbol,
+                strategy_name,
                 confianca=round(fused.confidence, 3),
                 limiar=self.settings.min_signal_confidence,
             )
             return
 
         self._executar(
-            symbol, fused, indicadores.atr, client, session, order_manager, instrument, signal.id
+            symbol, fused, atr, client, session, order_manager, instrument, signal.id, strategy_name
         )
 
     def _registrar_signal(
@@ -253,8 +322,8 @@ class BotRunner:
         session: Session,
         instrument: Instrument,
         fused: FusedSignal,
-        technical: TechnicalScore,
-        indicadores: IndicatorSnapshot,
+        resultado: StrategySignal,
+        strategy: str,
         sentiment: SentimentScore | None,
     ) -> Signal:
         """Grava a decisão antes de qualquer execução — inclusive quando é HOLD.
@@ -266,16 +335,16 @@ class BotRunner:
         """
         signal = Signal(
             instrument_id=instrument.id,
+            strategy=strategy,
             direction=fused.direction,
             confidence=fused.confidence,
             fused_score=fused.score,
             sentiment_score=sentiment.score if sentiment is not None else None,
             sentiment_confidence=sentiment.confidence if sentiment is not None else None,
-            technical_score=technical.score,
+            technical_score=resultado.score,
             weight_version=fused.weight_version,
             inputs={
-                "indicators": asdict(indicadores),
-                "technical_components": technical.components,
+                "components": resultado.components,
                 "weights": {
                     "technical": DEFAULT_WEIGHTS.technical,
                     "sentiment": DEFAULT_WEIGHTS.sentiment,
@@ -337,21 +406,26 @@ class BotRunner:
         order_manager: OrderManager,
         instrument: Instrument,
         signal_id: int | None = None,
+        strategy: str = "technical",
     ) -> None:
         if atr <= 0:
             # ATR zero significa volatilidade não medida. Sem ela não há stop
             # defensável, e ordem sem stop defensável não sai.
             logger.warning("runner.atr_invalido", symbol=symbol, atr=atr)
-            self._registrar_bloqueio(session, "atr_invalido", symbol, atr=atr)
+            self._registrar_bloqueio(session, "atr_invalido", symbol, strategy, atr=atr)
             return
 
         side = Side.BUY if fused.direction is Direction.BUY else Side.SELL
 
         # Múltiplas posições no símbolo são permitidas (história 34): o que
-        # não pode é reabrir a MESMA leitura de mercado a cada ciclo.
-        if not self._pode_abrir_posicao(session, client, symbol, side):
-            logger.debug("runner.leitura_repetida", symbol=symbol, direcao=side.value)
-            self._registrar_bloqueio(session, "cooldown", symbol, direcao=side.value)
+        # não pode é reabrir a MESMA leitura de mercado a cada ciclo. A partir
+        # da história 39, "mesma leitura" é por (símbolo, direção, estratégia)
+        # — duas estratégias no mesmo símbolo/direção não colidem entre si.
+        if not self._pode_abrir_posicao(session, client, symbol, side, strategy):
+            logger.debug(
+                "runner.leitura_repetida", symbol=symbol, estrategia=strategy, direcao=side.value
+            )
+            self._registrar_bloqueio(session, "cooldown", symbol, strategy, direcao=side.value)
             return
 
         account = client.get_account_info()
@@ -367,7 +441,9 @@ class BotRunner:
 
         if stop_loss <= 0:
             logger.warning("runner.stop_invalido", symbol=symbol, stop_loss=stop_loss)
-            self._registrar_bloqueio(session, "stop_invalido", symbol, stop_loss=stop_loss)
+            self._registrar_bloqueio(
+                session, "stop_invalido", symbol, strategy, stop_loss=stop_loss
+            )
             return
 
         volume = self._calcular_volume(
@@ -380,7 +456,7 @@ class BotRunner:
                 min_volume=instrument.min_volume,
             )
             self._registrar_bloqueio(
-                session, "risco_insuficiente", symbol, min_volume=instrument.min_volume
+                session, "risco_insuficiente", symbol, strategy, min_volume=instrument.min_volume
             )
             return
 
@@ -403,7 +479,7 @@ class BotRunner:
                 margin_free=account.margin_free,
             )
             self._registrar_bloqueio(
-                session, "margem_insuficiente", symbol, margin_free=account.margin_free
+                session, "margem_insuficiente", symbol, strategy, margin_free=account.margin_free
             )
             return
 
@@ -417,11 +493,12 @@ class BotRunner:
                 take_profit=take_profit,
                 min_volume=instrument.min_volume,
             ),
-            client_request_id=self._client_request_id(symbol, side),
+            client_request_id=self._client_request_id(symbol, side, strategy),
             instrument_id=instrument.id,
             equity=account.equity,
             daily_loss=self._perda_do_dia(session, client),
             signal_id=signal_id,
+            strategy=strategy,
         )
 
     # -- estado real, nunca presumido ---------------------------------------
@@ -461,7 +538,12 @@ class BotRunner:
         return abs(float(realizado)) + perda_flutuante
 
     def _pode_abrir_posicao(
-        self, session: Session, client: MT5Client, symbol: str, side: Side
+        self,
+        session: Session,
+        client: MT5Client,
+        symbol: str,
+        side: Side,
+        strategy: str = "technical",
     ) -> bool:
         """Nova posição no símbolo exige leitura materialmente diferente das já abertas.
 
@@ -469,10 +551,13 @@ class BotRunner:
         uma leitura diferente — permitida sempre, sem cooldown. A MESMA direção
         só é permitida de novo depois de `signal_repeat_cooldown_minutes` desde
         o último `Trade` que de fato chegou ao broker (nunca `REJECTED`) nesse
-        símbolo+direção: o sinal técnico persiste por vários ciclos, e sem este
-        intervalo o bot empilharia uma posição por ciclo na mesma direção. Sem
-        `Trade` nenhum registrado ainda para essa direção, não há o que
-        proteger — permite.
+        símbolo+direção+estratégia (história 39: o cooldown passou a ser por
+        estratégia, não mais global do símbolo — duas estratégias podem operar
+        a mesma direção no mesmo símbolo sem bloquear uma à outra): o sinal
+        técnico persiste por vários ciclos, e sem este intervalo o bot
+        empilharia uma posição por ciclo na mesma direção. Sem `Trade` nenhum
+        registrado ainda para essa direção+estratégia, não há o que proteger
+        — permite.
         """
         direcoes_abertas = {
             self._position_side(p) for p in client.get_positions() if p.symbol == symbol
@@ -487,6 +572,7 @@ class BotRunner:
                 Instrument.symbol == symbol,
                 Trade.side == side,
                 Trade.status != TradeStatus.REJECTED,
+                Trade.strategy == strategy,
             )
             .order_by(Trade.created_at.desc())
             .limit(1)
@@ -580,12 +666,15 @@ class BotRunner:
         return instrument
 
     @staticmethod
-    def _client_request_id(symbol: str, side: Side) -> str:
+    def _client_request_id(symbol: str, side: Side, strategy: str = "technical") -> str:
         """Chave de idempotência com granularidade de 5.5 minutos.
 
-        Dois ciclos dentro do mesmo bloco de 330 segundos, no mesmo símbolo e lado,
-        produzem o mesmo id — a segunda tentativa colide no UNIQUE de `trades`.
+        Dois ciclos dentro do mesmo bloco de 330 segundos, no mesmo símbolo,
+        lado e estratégia, produzem o mesmo id — a segunda tentativa colide no
+        UNIQUE de `trades`. A estratégia entra na chave (história 39) para que
+        duas estratégias decidindo o mesmo símbolo/direção no mesmo bloco não
+        colidam entre si — cada uma tem sua própria idempotência.
         """
         now = datetime.now(UTC)
         bucket = int(now.timestamp() // 330)
-        return f"bot-{symbol}-{side.value}-{bucket}"
+        return f"bot-{symbol}-{side.value}-{strategy}-{bucket}"

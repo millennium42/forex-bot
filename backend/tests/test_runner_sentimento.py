@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from backend.analysis.sentiment_analyzer import SentimentAnalyzer, SentimentScore
 from backend.analysis.signal_fusion import fuse_signals
-from backend.analysis.technical_analyzer import IndicatorSnapshot, TechnicalScore
+from backend.analysis.strategy import StrategySignal
+from backend.analysis.technical_analyzer import TechnicalScore
 from backend.config import Settings
 from backend.execution.runner import BotRunner
 from backend.models.document import Document
@@ -164,20 +165,15 @@ def test_registrar_signal_grava_sentimento_quando_presente(session: Session) -> 
     technical = TechnicalScore(score=0.8, confidence=1.0, components={"rsi": 0.8}, indicators=None)
     sentiment = SentimentScore(score=0.8, confidence=1.0, engine="fake")
     fused = fuse_signals(technical=technical, sentiment=sentiment)
-    indicadores = IndicatorSnapshot(
-        close=1.1,
-        rsi=70,
-        macd=0.001,
-        macd_signal=0.0005,
-        macd_diff=0.0005,
-        bb_high=1.2,
-        bb_low=1.0,
-        bb_pct=0.8,
-        atr=0.001,
+    resultado = StrategySignal(
+        direction=fused.direction,
+        confidence=technical.confidence,
+        components=technical.components,
+        score=technical.score,
     )
 
     signal = _runner()._registrar_signal(
-        session, instrument, fused, technical, indicadores, sentiment
+        session, instrument, fused, resultado, "technical", sentiment
     )
 
     assert signal.sentiment_score == pytest.approx(0.8)
@@ -194,19 +190,11 @@ def test_registrar_signal_sem_sentimento_grava_nulo(session: Session) -> None:
 
     technical = TechnicalScore(score=0.8, confidence=1.0, components={}, indicators=None)
     fused = fuse_signals(technical=technical, sentiment=None)
-    indicadores = IndicatorSnapshot(
-        close=1.1,
-        rsi=70,
-        macd=0.001,
-        macd_signal=0.0005,
-        macd_diff=0.0005,
-        bb_high=1.2,
-        bb_low=1.0,
-        bb_pct=0.8,
-        atr=0.001,
+    resultado = StrategySignal(
+        direction=fused.direction, confidence=technical.confidence, components=technical.components
     )
 
-    signal = _runner()._registrar_signal(session, instrument, fused, technical, indicadores, None)
+    signal = _runner()._registrar_signal(session, instrument, fused, resultado, "technical", None)
 
     assert signal.sentiment_score is None
     assert signal.sentiment_confidence is None

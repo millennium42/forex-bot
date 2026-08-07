@@ -39,6 +39,14 @@ class Signal(Base, CreatedAtMixin):
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
     fused_score: Mapped[float] = mapped_column(Float, nullable=False)
 
+    # Qual estratégia produziu esta decisão (história 39). "technical" é o
+    # legado — a única leitura que existia antes do registro de estratégias
+    # paralelas. Fonte de verdade para medir performance por estratégia a
+    # partir dos outcomes (ver `backend/api/routers/strategies.py`).
+    strategy: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="technical", index=True
+    )
+
     # Componentes, guardados separados para o weight optimizer poder reprocessar
     # decisões antigas com pesos novos sem recoletar nada.
     sentiment_score: Mapped[float | None] = mapped_column(Float, nullable=True)

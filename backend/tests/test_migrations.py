@@ -106,7 +106,9 @@ def test_stop_loss_nulo_e_recusado_no_postgres(migrated: Engine) -> None:
         conn.execute(
             text(
                 "INSERT INTO trades "
-                "(client_request_id, instrument_id, side, status, volume, stop_loss, trading_mode) "
-                "SELECT 'req-1', id, 'buy', 'pending', 0.1, NULL, 'demo' FROM instruments"
+                "(client_request_id, instrument_id, side, status, volume, stop_loss, "
+                "trading_mode, strategy) "
+                "SELECT 'req-1', id, 'buy', 'pending', 0.1, NULL, 'demo', 'technical' "
+                "FROM instruments"
             )
         )

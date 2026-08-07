@@ -79,6 +79,15 @@ def test_listas_derivadas_de_env() -> None:
     assert s.cashtag_list == ["$EURUSD", "$GBPUSD"]
 
 
+def test_default_de_estrategias_e_so_technical() -> None:
+    assert _settings().strategies_enabled_list == ["technical"]
+
+
+def test_estrategias_habilitadas_derivada_de_env() -> None:
+    s = _settings(strategies_enabled="technical, bbrsi ,,3macd")
+    assert s.strategies_enabled_list == ["technical", "bbrsi", "3macd"]
+
+
 def test_get_settings_e_memoizado() -> None:
     get_settings.cache_clear()
     assert get_settings() is get_settings()

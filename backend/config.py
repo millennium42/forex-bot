@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     twitter_bearer_token: str | None = None
     twitter_cashtags: str = ""
 
+    # --- Estratégias paralelas (história 39) --------------------------------
+    # Cada estratégia habilitada roda todo ciclo, para cada símbolo, sem saber
+    # das outras (`backend.analysis.strategy.STRATEGY_REGISTRY`). "technical"
+    # é a leitura que já existia (technical_analyzer + alpha factors) — o
+    # legado, e o único valor válido até as próximas estratégias (histórias
+    # 40-42) entrarem no registro.
+    strategies_enabled: str = "technical"
+
     # --- Operação -----------------------------------------------------------
     # Pares em que o cálculo de risco é correto: os únicos com USD como moeda de
     # cotação, igual à moeda da conta. Nos outros 122 pares que o broker oferece,
@@ -206,6 +214,11 @@ class Settings(BaseSettings):
     def symbol_list(self) -> list[str]:
         """Pares que o bot opera. Ver o comentário em `trading_symbols`."""
         return [s.strip().upper() for s in self.trading_symbols.split(",") if s.strip()]
+
+    @property
+    def strategies_enabled_list(self) -> list[str]:
+        """Nomes de estratégia a instanciar. Nome inválido falha no boot do runner."""
+        return [s.strip() for s in self.strategies_enabled.split(",") if s.strip()]
 
     @property
     def cashtag_list(self) -> list[str]:
