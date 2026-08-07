@@ -523,7 +523,7 @@
         "usa a lib ta para o estocastico, sem reimplementar",
         "teste por condicao: cada uma falhando isoladamente impede o sinal"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 43,

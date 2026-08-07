@@ -981,3 +981,43 @@ Nenhuma historia concluida na iteracao 1. Parando para inspecao.
     False` de cada loop — vale a pena mirar coverage por linha (`--cov-report=term-missing`) para
     saber exatamente quais branches faltam em vez de adivinhar.
 ---
+
+## [2026-08-06] — História 42: Estratégia 2MACDSTO
+- `TwoMacdStoStrategy` em `backend/analysis/strategy.py`: porta fiel de `2MACDSTO.mq5`
+  (github.com/geraked/metatrader5), MACD(13,21) + MACD(34,144) + Estocástico lento(7,3,3). Volta a
+  ser condição de barra única (bar -1/-2), como `BBRSIStrategy` — as cinco condições da fonte
+  (`M2[2]>0 && M1[2]<0 && STO_M[2]<20 && STO_M[2]<=STO_S[2] && STO_M[1]>STO_S[1]`, venda espelhada
+  com 80) não exigem varredura multi-barra como `ThreeMacdStrategy`. Registrada como `"2macdsto"`
+  em `STRATEGY_REGISTRY`. Sem stop próprio (`stop_loss=None`): a fonte usa `SL_SWING`, fora do
+  escopo desta história (AC não pedia stop derivado, diferente da 40).
+- Arquivos alterados: `backend/analysis/strategy.py` (`_macd_line`, `_stochastic_k_d`,
+  `_two_macd_sto_buy`/`_two_macd_sto_sell`, `TwoMacdStoStrategy`, constantes `TWO_MACD_STO_*`),
+  `backend/tests/test_strategy.py` (26 testes novos: 12 sobre as funções de condição pura —
+  baseline verdadeira + cada uma das 5 condições falhando isoladamente, para compra e venda — mais
+  série curta, série constante→NaN, compra/venda/hold via monkeypatch, NaN via monkeypatch, name/
+  registry/build_enabled_strategies).
+- **Aprendizados para as próximas iterações:**
+  - Ver os dois padrões novos em Codebase Patterns/Gotchas do AGENTS.md: composição de
+    `StochasticOscillator.stoch_signal()` (1 estágio) + `.rolling().mean()` manual (2º estágio) para
+    replicar o `Slowing`+`DPeriod` de dois estágios do `iStochastic` MQL5 sem reimplementar o
+    oscilador; e `cast("pd.Series", ...)` no retorno de função tipada que chama método de `ta` sem
+    stubs (`no-any-return` do mypy strict).
+  - `StochasticOscillator(high=..., low=..., close=..., ...)` tem `high`/`low` antes de `close` na
+    assinatura — diferente de `RSIIndicator`/`MACD`/`BollingerBands`, que só pedem `close`. Passar
+    por keyword evita esse detalhe silencioso trocar os parâmetros.
+  - Como o teste de "isolar cada condição" exige as outras 4 permanecerem verdadeiras, duas das
+    cinco condições (nível vs. cruzamento de %K/%D) compartilham as mesmas variáveis (`k_2`, `d_2`)
+    — testar "nível falha" ajustando só `k_2` também derruba "k_2<=d_2" de graça (e vice-versa) se
+    o outro valor ficar parado no baseline. Resolvido ajustando o valor não-testado (`d_2`) junto,
+    só nesses dois testes, para manter a condição vizinha verdadeira e isolar de fato a que está
+    sob teste — mesmo cuidado que "história 28" já registrou para não deixar dois efeitos
+    colaterais escondidos atrás da mesma asserção.
+  - Preço 100% constante (`open=high=low=close` iguais) quebra o estocástico em 0/0 (`smax-smin=0`
+    no denominador) e devolve NaN, não HOLD — mesmo caminho de "indicador em aquecimento apesar do
+    comprimento mínimo" que RSI/MACD já tinham sobre série plana, mas por um motivo aritmético
+    diferente (divisão por zero, não ganho/perda ausente). Usado como o teste de série "real" (sem
+    monkeypatch) desta história, análogo ao papel do teste de série plana do RSI na história 7.
+  - Suíte completa: 484 testes, coverage global 93.31%, `strategy.py` 92% (as linhas não cobertas
+    são todas pré-existentes da varredura do 3MACD, história 41 — nenhuma linha nova desta história
+    ficou sem teste).
+---

@@ -49,6 +49,7 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
 | 39 — Arquitetura de estratégias paralelas | ✅ |
 | 40 — Estratégia BBRSI | ✅ |
 | 41 — Estratégia 3MACD | ✅ |
+| 42 — Estratégia 2MACDSTO | ✅ |
 
 ---
 
@@ -388,6 +389,20 @@ Contexto acumulado para a próxima iteração do Ralph. Atualizado a cada histó
   código-fonte inteiro (não um resumo), isso reescreve/resume a lógica e perde precisão exatamente
   onde ela importa (limites de loop, sinais de comparação). `curl -sL <raw url>` devolve o arquivo
   byte a byte; é o único jeito confiável de portar uma condição de trading bar a bar.
+- **`ta.momentum.StochasticOscillator` só tem UM estágio de suavização (`smooth_window` sobre o %K
+  bruto via `.stoch_signal()`), mas o `iStochastic` do MQL5 tem DOIS (`Slowing` sobre o %K bruto,
+  depois `DPeriod` sobre esse resultado).** Para portar `Stoch(K, Slowing, DPeriod)` fielmente sem
+  reimplementar o oscilador: `k = StochasticOscillator(window=K, smooth_window=Slowing).stoch_signal()`
+  já entrega o primeiro estágio (equivale ao buffer 0/`%K` do MQL5); o segundo estágio é só mais um
+  `k.rolling(DPeriod).mean()` por cima — agregação simples do pandas, não reimplementação de
+  indicador (história 42, `_stochastic_k_d` em `backend/analysis/strategy.py`). `high`/`low`/`close`
+  são passados por *keyword* para `StochasticOscillator` — a assinatura da lib é `(high, low, close,
+  ...)`, ordem diferente da maioria dos outros indicadores de `ta` (`close` primeiro).
+- **`.macd()`/`.stoch()`/etc. da lib `ta` sem stubs devolvem `Any` (mesmo módulo já coberto por
+  `ignore_missing_imports` no mypy). Uma função que declara `-> pd.Series` e faz `return
+  indicador.macd()` direto dispara `no-any-return` no mypy strict.** `cast("pd.Series", ...)` no
+  ponto de retorno (mesmo padrão de `cast(MT5Terminal, MetaTrader5)` em `mt5_client.py`) resolve sem
+  suprimir o strict mode em outro lugar.
 
 ---
 

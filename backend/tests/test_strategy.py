@@ -23,8 +23,11 @@ from backend.analysis.strategy import (
     BBRSIStrategy,
     TechnicalStrategy,
     ThreeMacdStrategy,
+    TwoMacdStoStrategy,
     _three_macd_buy,
     _three_macd_sell,
+    _two_macd_sto_buy,
+    _two_macd_sto_sell,
     build_enabled_strategies,
 )
 from backend.analysis.technical_analyzer import IndicatorSnapshot, TechnicalScore
@@ -420,3 +423,239 @@ def test_build_enabled_strategies_3macd() -> None:
     assert len(estrategias) == 1
     assert estrategias[0].name == "3macd"
     assert isinstance(estrategias[0], ThreeMacdStrategy)
+
+
+# -- história 42: TwoMacdStoStrategy ------------------------------------------
+
+# `_two_macd_sto_buy`/`_two_macd_sto_sell` são a porta literal das cinco
+# condições de `BuySignal()`/`SellSignal()` em `2MACDSTO.mq5`, testadas direto
+# com escalares (bar -1 = "_1", bar -2 = "_2", mesma convenção de índice de
+# `BBRSIStrategy`/`ThreeMacdStrategy`) — cada teste de "isolada" muda só o
+# valor da condição sob teste em relação à baseline, mantendo as outras
+# quatro verdadeiras, para provar que ela sozinha barra o sinal.
+
+_BUY_OK = {"m1_2": -1.0, "m2_2": 1.0, "k_2": 10.0, "d_2": 15.0, "k_1": 25.0, "d_1": 20.0}
+_SELL_OK = {"m1_2": 1.0, "m2_2": -1.0, "k_2": 90.0, "d_2": 85.0, "k_1": 75.0, "d_1": 80.0}
+
+
+def test_two_macd_sto_buy_todas_condicoes_dispara() -> None:
+    assert _two_macd_sto_buy(**_BUY_OK) is True
+
+
+def test_two_macd_sto_buy_m2_nao_positivo_falha() -> None:
+    assert _two_macd_sto_buy(**{**_BUY_OK, "m2_2": -1.0}) is False
+
+
+def test_two_macd_sto_buy_m1_nao_negativo_falha() -> None:
+    assert _two_macd_sto_buy(**{**_BUY_OK, "m1_2": 1.0}) is False
+
+
+def test_two_macd_sto_buy_k2_nao_abaixo_de_20_falha() -> None:
+    # d_2 sobe junto para k_2<=d_2 continuar verdadeira: isola só o nível.
+    assert _two_macd_sto_buy(**{**_BUY_OK, "k_2": 25.0, "d_2": 30.0}) is False
+
+
+def test_two_macd_sto_buy_k2_acima_de_d2_falha() -> None:
+    assert _two_macd_sto_buy(**{**_BUY_OK, "d_2": 5.0}) is False
+
+
+def test_two_macd_sto_buy_sem_cruzamento_k1_d1_falha() -> None:
+    assert _two_macd_sto_buy(**{**_BUY_OK, "k_1": 15.0, "d_1": 20.0}) is False
+
+
+def test_two_macd_sto_sell_todas_condicoes_dispara() -> None:
+    assert _two_macd_sto_sell(**_SELL_OK) is True
+
+
+def test_two_macd_sto_sell_m2_nao_negativo_falha() -> None:
+    assert _two_macd_sto_sell(**{**_SELL_OK, "m2_2": 1.0}) is False
+
+
+def test_two_macd_sto_sell_m1_nao_positivo_falha() -> None:
+    assert _two_macd_sto_sell(**{**_SELL_OK, "m1_2": -1.0}) is False
+
+
+def test_two_macd_sto_sell_k2_nao_acima_de_80_falha() -> None:
+    # d_2 desce junto para k_2>=d_2 continuar verdadeira: isola só o nível.
+    assert _two_macd_sto_sell(**{**_SELL_OK, "k_2": 70.0, "d_2": 60.0}) is False
+
+
+def test_two_macd_sto_sell_k2_abaixo_de_d2_falha() -> None:
+    assert _two_macd_sto_sell(**{**_SELL_OK, "d_2": 95.0}) is False
+
+
+def test_two_macd_sto_sell_sem_cruzamento_k1_d1_falha() -> None:
+    assert _two_macd_sto_sell(**{**_SELL_OK, "k_1": 85.0, "d_1": 80.0}) is False
+
+
+def test_two_macd_sto_serie_curta_para_macd_34_144_devolve_none() -> None:
+    """AC: série curta demais para o MACD(34,144) — default real — devolve None."""
+    strategy = TwoMacdStoStrategy()
+    assert strategy.evaluate(_candles_from_closes([100.0] * 100)) is None
+
+
+def test_two_macd_sto_serie_constante_devolve_none() -> None:
+    """Preço constante: high==low==close derruba o estocástico em 0/0 (NaN) —
+    mesmo caminho de aquecimento de RSI/MACD sobre série plana já documentado."""
+    strategy = TwoMacdStoStrategy(
+        m1_fast=2, m1_slow=3, m2_fast=3, m2_slow=5, sto_k_period=3, sto_slowing=2, sto_d_period=2
+    )
+    assert strategy.evaluate(_candles_from_closes([100.0] * 30)) is None
+
+
+def _patch_two_macd_sto(
+    monkeypatch: pytest.MonkeyPatch,
+    estrategia: TwoMacdStoStrategy,
+    n: int,
+    m1_valores: dict[str, float],
+    m2_valores: dict[str, float],
+    sto_valores: dict[str, float],
+) -> None:
+    por_slow = {
+        estrategia._m1_slow: m1_valores,
+        estrategia._m2_slow: m2_valores,
+    }
+
+    def fake_macd_line(close: pd.Series, fast: int, slow: int) -> pd.Series:
+        serie = pd.Series([0.0] * n)
+        serie.iloc[-1] = por_slow[slow]["_1"]
+        serie.iloc[-2] = por_slow[slow]["_2"]
+        return serie
+
+    def fake_stochastic_k_d(
+        high: pd.Series,
+        low: pd.Series,
+        close: pd.Series,
+        k_period: int,
+        slowing: int,
+        d_period: int,
+    ) -> tuple[pd.Series, pd.Series]:
+        k = pd.Series([50.0] * n)
+        d = pd.Series([50.0] * n)
+        k.iloc[-1], d.iloc[-1] = sto_valores["k_1"], sto_valores["d_1"]
+        k.iloc[-2], d.iloc[-2] = sto_valores["k_2"], sto_valores["d_2"]
+        return k, d
+
+    monkeypatch.setattr(strategy_module, "_macd_line", fake_macd_line)
+    monkeypatch.setattr(strategy_module, "_stochastic_k_d", fake_stochastic_k_d)
+
+
+def test_two_macd_sto_dispara_compra(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = TwoMacdStoStrategy(
+        m1_fast=2, m1_slow=3, m2_fast=3, m2_slow=5, sto_k_period=3, sto_slowing=2, sto_d_period=2
+    )
+    _patch_two_macd_sto(
+        monkeypatch,
+        strategy,
+        30,
+        {"_1": -0.5, "_2": _BUY_OK["m1_2"]},
+        {"_1": 0.5, "_2": _BUY_OK["m2_2"]},
+        {
+            "k_1": _BUY_OK["k_1"],
+            "d_1": _BUY_OK["d_1"],
+            "k_2": _BUY_OK["k_2"],
+            "d_2": _BUY_OK["d_2"],
+        },
+    )
+
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 30))
+
+    assert resultado is not None
+    assert resultado.direction is Direction.BUY
+    assert resultado.score == pytest.approx(1.0)
+    assert resultado.confidence == pytest.approx(1.0)
+    assert resultado.stop_loss is None
+    assert resultado.components == {
+        "m1_2": _BUY_OK["m1_2"],
+        "m2_2": _BUY_OK["m2_2"],
+        "k_1": _BUY_OK["k_1"],
+        "k_2": _BUY_OK["k_2"],
+        "d_1": _BUY_OK["d_1"],
+        "d_2": _BUY_OK["d_2"],
+    }
+
+
+def test_two_macd_sto_dispara_venda(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = TwoMacdStoStrategy(
+        m1_fast=2, m1_slow=3, m2_fast=3, m2_slow=5, sto_k_period=3, sto_slowing=2, sto_d_period=2
+    )
+    _patch_two_macd_sto(
+        monkeypatch,
+        strategy,
+        30,
+        {"_1": 0.5, "_2": _SELL_OK["m1_2"]},
+        {"_1": -0.5, "_2": _SELL_OK["m2_2"]},
+        {
+            "k_1": _SELL_OK["k_1"],
+            "d_1": _SELL_OK["d_1"],
+            "k_2": _SELL_OK["k_2"],
+            "d_2": _SELL_OK["d_2"],
+        },
+    )
+
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 30))
+
+    assert resultado is not None
+    assert resultado.direction is Direction.SELL
+    assert resultado.score == pytest.approx(-1.0)
+    assert resultado.confidence == pytest.approx(1.0)
+    assert resultado.stop_loss is None
+
+
+def test_two_macd_sto_sem_padrao_devolve_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    strategy = TwoMacdStoStrategy(
+        m1_fast=2, m1_slow=3, m2_fast=3, m2_slow=5, sto_k_period=3, sto_slowing=2, sto_d_period=2
+    )
+    _patch_two_macd_sto(
+        monkeypatch,
+        strategy,
+        30,
+        {"_1": 0.0, "_2": 0.0},
+        {"_1": 0.0, "_2": 0.0},
+        {"k_1": 50.0, "d_1": 50.0, "k_2": 50.0, "d_2": 50.0},
+    )
+
+    resultado = strategy.evaluate(_candles_from_closes([100.0] * 30))
+
+    assert resultado is not None
+    assert resultado.direction is Direction.HOLD
+    assert resultado.confidence == pytest.approx(0.0)
+    assert resultado.stop_loss is None
+
+
+def test_two_macd_sto_com_nan_devolve_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Indicador em aquecimento apesar do comprimento mínimo: ausência de informação."""
+    strategy = TwoMacdStoStrategy(
+        m1_fast=2, m1_slow=3, m2_fast=3, m2_slow=5, sto_k_period=3, sto_slowing=2, sto_d_period=2
+    )
+    _patch_two_macd_sto(
+        monkeypatch,
+        strategy,
+        30,
+        {"_1": -0.5, "_2": float("nan")},
+        {"_1": 0.5, "_2": _BUY_OK["m2_2"]},
+        {
+            "k_1": _BUY_OK["k_1"],
+            "d_1": _BUY_OK["d_1"],
+            "k_2": _BUY_OK["k_2"],
+            "d_2": _BUY_OK["d_2"],
+        },
+    )
+
+    assert strategy.evaluate(_candles_from_closes([100.0] * 30)) is None
+
+
+def test_two_macd_sto_name_e_2macdsto() -> None:
+    assert TwoMacdStoStrategy().name == "2macdsto"
+
+
+def test_registry_contem_2macdsto() -> None:
+    assert "2macdsto" in STRATEGY_REGISTRY
+
+
+def test_build_enabled_strategies_2macdsto() -> None:
+    estrategias = build_enabled_strategies(["2macdsto"])
+
+    assert len(estrategias) == 1
+    assert estrategias[0].name == "2macdsto"
+    assert isinstance(estrategias[0], TwoMacdStoStrategy)

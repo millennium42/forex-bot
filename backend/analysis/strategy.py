@@ -26,6 +26,12 @@ e o stop sai da própria banda, não do ATR global (ver `StrategySignal.stop_los
 `BuffSize` barras à procura de um cruzamento de zero do MACD rápido seguido
 de um topo/fundo do MACD médio — uma máquina de estados sobre a janela, não
 uma comparação pontual. Sem stop próprio: usa o ATR global do runner.
+
+`TwoMacdStoStrategy` (história 42) é reversão em tendência: porta fiel de
+`2MACDSTO.mq5` do mesmo repositório, dois MACDs ((13,21), (34,144)) mais um
+Estocástico lento (7,3,3). Volta a ser condição de barra única, como BBRSI —
+as cinco condições da fonte comparam só as barras -1 e -2, sem varredura.
+Sem stop próprio: a fonte usa `SL_SWING`, fora do escopo desta história.
 """
 
 from __future__ import annotations
@@ -33,10 +39,10 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Protocol, cast
 
 import pandas as pd
-from ta.momentum import RSIIndicator
+from ta.momentum import RSIIndicator, StochasticOscillator
 from ta.trend import MACD
 from ta.volatility import BollingerBands
 
@@ -57,11 +63,19 @@ __all__ = [
     "THREE_MACD_M2_SLOW",
     "THREE_MACD_M3_FAST",
     "THREE_MACD_M3_SLOW",
+    "TWO_MACD_STO_D_PERIOD",
+    "TWO_MACD_STO_K_PERIOD",
+    "TWO_MACD_STO_M1_FAST",
+    "TWO_MACD_STO_M1_SLOW",
+    "TWO_MACD_STO_M2_FAST",
+    "TWO_MACD_STO_M2_SLOW",
+    "TWO_MACD_STO_SLOWING",
     "BBRSIStrategy",
     "Strategy",
     "StrategySignal",
     "TechnicalStrategy",
     "ThreeMacdStrategy",
+    "TwoMacdStoStrategy",
     "build_enabled_strategies",
 ]
 
@@ -474,12 +488,148 @@ class ThreeMacdStrategy:
         )
 
 
+# Defaults de `2MACDSTO.mq5` (geraked/metatrader5): MACD(13,21) + MACD(34,144)
+# + Estocástico lento(7,3,3). Níveis 20/80 são fixos na fonte, não parâmetros.
+TWO_MACD_STO_M1_FAST = 13
+TWO_MACD_STO_M1_SLOW = 21
+TWO_MACD_STO_M2_FAST = 34
+TWO_MACD_STO_M2_SLOW = 144
+TWO_MACD_STO_K_PERIOD = 7
+TWO_MACD_STO_SLOWING = 3
+TWO_MACD_STO_D_PERIOD = 3
+_TWO_MACD_STO_K_LOWER = 20.0
+_TWO_MACD_STO_K_UPPER = 80.0
+
+
+def _macd_line(close: pd.Series, fast: int, slow: int) -> pd.Series:
+    """Linha principal do MACD (`ema_fast - ema_slow`), via `ta.trend.MACD`."""
+    return cast("pd.Series", MACD(close=close, window_slow=slow, window_fast=fast).macd())
+
+
+def _stochastic_k_d(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    k_period: int,
+    slowing: int,
+    d_period: int,
+) -> tuple[pd.Series, pd.Series]:
+    """%K/%D do "estocástico lento" na convenção MQL5 (`iStochastic`, Method=SMA).
+
+    `ta.momentum.StochasticOscillator` só expõe um estágio de suavização
+    (`smooth_window` sobre o %K bruto). O MQL5 aplica dois: `Slowing` sobre o
+    %K bruto vira o buffer 0 ("%K" exibido, `STO_M` na fonte), e `DPeriod`
+    sobre esse resultado vira o buffer 1 (`STO_S`). `stoch_signal` com
+    `smooth_window=slowing` já devolve exatamente o primeiro estágio — o
+    segundo é só mais uma média móvel simples por cima, sem reimplementar o
+    oscilador em si.
+    """
+    k = StochasticOscillator(
+        high=high, low=low, close=close, window=k_period, smooth_window=slowing
+    ).stoch_signal()
+    d = k.rolling(window=d_period).mean()
+    return k, d
+
+
+def _two_macd_sto_buy(
+    m1_2: float, m2_2: float, k_1: float, k_2: float, d_1: float, d_2: float
+) -> bool:
+    """Porta literal de `BuySignal()` em `2MACDSTO.mq5`."""
+    return m2_2 > 0 and m1_2 < 0 and k_2 < _TWO_MACD_STO_K_LOWER and k_2 <= d_2 and k_1 > d_1
+
+
+def _two_macd_sto_sell(
+    m1_2: float, m2_2: float, k_1: float, k_2: float, d_1: float, d_2: float
+) -> bool:
+    """Porta literal de `SellSignal()` em `2MACDSTO.mq5` — espelho exato."""
+    return m2_2 < 0 and m1_2 > 0 and k_2 > _TWO_MACD_STO_K_UPPER and k_2 >= d_2 and k_1 < d_1
+
+
+class TwoMacdStoStrategy:
+    """Reversão em tendência: dois MACDs + Estocástico lento — porta de `2MACDSTO.mq5`.
+
+    Sinal binário, como `BBRSIStrategy`: as cinco condições da fonte batem
+    (compra ou venda) ou não (HOLD) — não há posição intermediária. Sem stop
+    próprio: `StrategySignal.stop_loss` fica `None` e o runner deriva do ATR
+    global (a fonte usa `SL_SWING`, fora do escopo desta história).
+    """
+
+    name = "2macdsto"
+
+    def __init__(
+        self,
+        m1_fast: int = TWO_MACD_STO_M1_FAST,
+        m1_slow: int = TWO_MACD_STO_M1_SLOW,
+        m2_fast: int = TWO_MACD_STO_M2_FAST,
+        m2_slow: int = TWO_MACD_STO_M2_SLOW,
+        sto_k_period: int = TWO_MACD_STO_K_PERIOD,
+        sto_slowing: int = TWO_MACD_STO_SLOWING,
+        sto_d_period: int = TWO_MACD_STO_D_PERIOD,
+    ) -> None:
+        self._m1_fast = m1_fast
+        self._m1_slow = m1_slow
+        self._m2_fast = m2_fast
+        self._m2_slow = m2_slow
+        self._sto_k_period = sto_k_period
+        self._sto_slowing = sto_slowing
+        self._sto_d_period = sto_d_period
+
+    def evaluate(self, candles: pd.DataFrame) -> StrategySignal | None:
+        high = candles["high"].astype(float)
+        low = candles["low"].astype(float)
+        close = candles["close"].astype(float)
+
+        # MACD só deixa de ser NaN a partir do candle `slow`-ésimo (gotcha já
+        # registrado: `ta` usa `min_periods=window` no ewm). O estocástico
+        # precisa de `k_period` candles para o %K bruto, mais `slowing` e
+        # `d_period` para os dois estágios de suavização MQL5 por cima.
+        minimo = (
+            max(self._m1_slow, self._m2_slow)
+            + self._sto_k_period
+            + self._sto_slowing
+            + self._sto_d_period
+        )
+        if len(close) < minimo:
+            return None
+
+        m1 = _macd_line(close, self._m1_fast, self._m1_slow)
+        m2 = _macd_line(close, self._m2_fast, self._m2_slow)
+        k, d = _stochastic_k_d(
+            high, low, close, self._sto_k_period, self._sto_slowing, self._sto_d_period
+        )
+
+        m1_2, m2_2 = float(m1.iloc[-2]), float(m2.iloc[-2])
+        k_1, k_2 = float(k.iloc[-1]), float(k.iloc[-2])
+        d_1, d_2 = float(d.iloc[-1]), float(d.iloc[-2])
+
+        if any(math.isnan(v) for v in (m1_2, m2_2, k_1, k_2, d_1, d_2)):
+            # Indicador em aquecimento apesar do comprimento mínimo (ex.:
+            # estocástico com máximo == mínimo numa janela) — ausência de
+            # informação, mesma regra de `BBRSIStrategy`/`ThreeMacdStrategy`.
+            return None
+
+        componentes = {"m1_2": m1_2, "m2_2": m2_2, "k_1": k_1, "k_2": k_2, "d_1": d_1, "d_2": d_2}
+
+        if _two_macd_sto_buy(m1_2, m2_2, k_1, k_2, d_1, d_2):
+            return StrategySignal(
+                direction=Direction.BUY, confidence=1.0, components=componentes, score=1.0
+            )
+        if _two_macd_sto_sell(m1_2, m2_2, k_1, k_2, d_1, d_2):
+            return StrategySignal(
+                direction=Direction.SELL, confidence=1.0, components=componentes, score=-1.0
+            )
+        return StrategySignal(
+            direction=Direction.HOLD, confidence=0.0, components=componentes, score=0.0
+        )
+
+
 # Registro de estratégias conhecidas, chaveado pelo nome usado em
 # `STRATEGIES_ENABLED` e persistido em `signals.strategy`/`trades.strategy`.
 STRATEGY_REGISTRY: dict[str, Callable[[], Strategy]] = {
     "technical": TechnicalStrategy,
     "bbrsi": BBRSIStrategy,
     "3macd": ThreeMacdStrategy,
+    "2macdsto": TwoMacdStoStrategy,
 }
 
 
