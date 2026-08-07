@@ -41,11 +41,17 @@ comparado não seria risco real. Não amplie a lista sem converter a moeda.
 
 ## 3. Como subir
 
+**Script único** — depois de ligar o PC, abrir o Docker Desktop e logar no MT5:
+
 ```bash
-cd C:\Users\Admin\Documents\Projetos\forex-bot; docker compose up -d; uv run alembic upgrade head
+cd C:\Users\Admin\Documents\Projetos\forex-bot; .\scripts\start_all.ps1
 ```
 
-Um terminal para cada:
+Verifica Docker/`.env`/MT5, sobe Postgres+Redis, aplica migrations e abre 5
+janelas (API, Frontend, Celery Worker, Celery Beat, Bot). `-SkipBot` sobe só a
+infraestrutura sem iniciar o BotRunner.
+
+Manual, um terminal para cada (equivalente ao que o script automatiza):
 
 ```bash
 cd C:\Users\Admin\Documents\Projetos\forex-bot; uv run uvicorn backend.api.main:app --host 127.0.0.1 --port 8001
